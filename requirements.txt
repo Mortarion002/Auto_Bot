@@ -1,0 +1,5 @@
+playwright
+anthropic
+python-dotenv
+requests
+loguru

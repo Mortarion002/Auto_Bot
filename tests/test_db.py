@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import logging
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+from config import load_settings
+from db import Database
+from models import DiscoveredPost
+
+
+class DatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.temp_dir.name)
+        self.settings = load_settings(self.base_dir)
+        self.logger = logging.getLogger(f"db-test-{self.id()}")
+        self.db = Database(self.settings.db_path, self.logger)
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_schema_initialization_is_idempotent(self) -> None:
+        self.db.close()
+        reopened = Database(self.settings.db_path, self.logger)
+        tables = {
+            row["name"]
+            for row in reopened.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        self.assertIn("commented_posts", tables)
+        self.assertIn("standalone_posts", tables)
+        self.assertIn("run_log", tables)
+        self.assertIn("agent_state", tables)
+        reopened.close()
+
+    def test_comment_upsert_preserves_single_row_per_post(self) -> None:
+        now = datetime.now(timezone.utc)
+        post = DiscoveredPost(
+            post_id="abc123",
+            post_url="https://x.com/test/status/abc123",
+            author_handle="tester",
+            text="A post about NPS timing.",
+            likes=25,
+            replies=4,
+            reposts=1,
+            created_at=now,
+            keyword="NPS",
+            search_mode="live",
+            score=33.5,
+        )
+        self.db.log_comment(
+            post,
+            "First draft",
+            status="failed",
+            status_reason="timeout",
+            commented_at=now.isoformat(),
+        )
+        self.db.log_comment(
+            post,
+            "Second draft",
+            status="success",
+            status_reason="submitted",
+            commented_at=now.isoformat(),
+        )
+        row = self.db.conn.execute(
+            "SELECT comment_text, status FROM commented_posts WHERE post_id = ?",
+            ("abc123",),
+        ).fetchone()
+        self.assertEqual(row["comment_text"], "Second draft")
+        self.assertEqual(row["status"], "success")
+
+    def test_daily_counts_and_rotation_state(self) -> None:
+        now = datetime.now(timezone.utc)
+        post = DiscoveredPost(
+            post_id="xyz789",
+            post_url="https://x.com/test/status/xyz789",
+            author_handle="tester",
+            text="A post about retention.",
+            likes=30,
+            replies=3,
+            reposts=2,
+            created_at=now,
+            keyword="retention",
+            search_mode="live",
+            score=39.0,
+        )
+        self.db.log_comment(
+            post,
+            "Useful comment",
+            status="success",
+            status_reason="submitted",
+            commented_at=now.isoformat(),
+        )
+        self.db.log_standalone_post(
+            "A standalone post",
+            "SaaS founder lesson",
+            status="success",
+            status_reason="submitted",
+            posted_at=now.isoformat(),
+        )
+        run_id = self.db.start_run("engage", now.isoformat())
+        self.db.finish_run(
+            run_id,
+            finished_at=now.isoformat(),
+            searches_run=10,
+        )
+        counts = self.db.get_daily_activity_counts("Asia/Calcutta", now=now)
+        self.assertEqual(counts["comments_posted"], 1)
+        self.assertEqual(counts["standalone_posted"], 1)
+        self.assertEqual(counts["searches_run"], 10)
+
+        keywords = self.db.get_rotating_keywords(
+            ["one", "two", "three"],
+            2,
+            updated_at=now.isoformat(),
+            advance=True,
+        )
+        self.assertEqual(keywords, ["one", "two"])
+        keywords = self.db.get_rotating_keywords(
+            ["one", "two", "three"],
+            2,
+            updated_at=now.isoformat(),
+            advance=True,
+        )
+        self.assertEqual(keywords, ["three", "one"])
+
+    def test_topic_rotation_and_consecutive_failures(self) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        first = self.db.get_next_topic(
+            ["t1", "t2", "t3"],
+            updated_at=now,
+            advance=True,
+        )
+        second = self.db.get_next_topic(
+            ["t1", "t2", "t3"],
+            updated_at=now,
+            advance=True,
+        )
+        third = self.db.get_next_topic(
+            ["t1", "t2", "t3"],
+            updated_at=now,
+            advance=True,
+        )
+        self.assertEqual(first, ("t1", 1, False))
+        self.assertEqual(second, ("t2", 2, False))
+        self.assertEqual(third, ("t3", 3, True))
+
+        self.db.set_consecutive_comment_failures(2, now)
+        self.assertEqual(self.db.get_consecutive_comment_failures(), 2)
