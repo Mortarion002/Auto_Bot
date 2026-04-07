@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-This document specifies the architecture, behavior, and implementation plan for Elvan's X (Twitter) social agent. The agent runs fully autonomously on a local Windows machine, using browser automation (Playwright) instead of the X API. It operates under the developer persona — a technical co-founder building Elvan — and is designed to grow organic presence in SaaS, NPS, CX, and Build-in-Public communities on X.
+This document specifies the architecture, behavior, and implementation plan for Elvan's X (Twitter) social agent. The agent runs fully autonomously on a local Windows machine, using browser automation instead of the X API. It operates under the developer persona — a technical co-founder building Elvan — and is designed to grow organic presence in SaaS, NPS, CX, and Build-in-Public communities on X.
 
 The agent does two things:
 1. **Engage** — Find relevant posts and leave meaningful, value-adding comments
@@ -91,17 +91,17 @@ Windows Task Scheduler
         ▼
   orchestrator.py          ← main entry point, runs on schedule
         │
-        ├──► session.py    ← manages persistent Playwright browser session
-        │                     (uses already-logged-in Chrome profile)
+        ├──► session.py    ← manages Chrome automation session
+        │                     (fresh login approach via undetected-chromedriver)
         │
         ├──► searcher.py   ← searches X for keywords, scrapes post data,
         │                     scores and filters posts
         │
-        ├──► ai.py         ← Claude API wrapper
+        ├──► ai.py         ← Gemini API wrapper
         │                     generates comments + standalone posts
         │                     enforces persona and content rules
         │
-        ├──► poster.py     ← types and submits content on X via Playwright
+        ├──► poster.py     ← types and submits content on X via browser automation
         │                     handles human-like delays and typing speed
         │
         ├──► db.py         ← SQLite database
@@ -116,9 +116,9 @@ Windows Task Scheduler
 ## 6. Module Specifications
 
 ### 6.1 session.py — Browser Session Manager
-- Connects to existing Chrome instance via `--remote-debugging-port` OR
-- Launches Playwright with a persistent profile directory (already logged-in state)
-- Does **not** log in fresh every run — avoids login detection
+- Launches Chrome through `undetected-chromedriver`
+- Uses a fresh browser session and signs in with account credentials when needed
+- Avoids reliance on remote debugging ports or a locked local Chrome profile
 - Exposes a single `get_page()` function used by all other modules
 
 ### 6.2 searcher.py — Post Discovery
@@ -145,8 +145,8 @@ Windows Task Scheduler
 
 **Output:** List of scored post objects
 
-### 6.3 ai.py — Claude API Content Generator
-**Model:** claude-sonnet-4-20250514  
+### 6.3 ai.py — Gemini API Content Generator
+**Model:** gemini-2.5-flash  
 **Two modes:**
 
 **Mode 1: Comment Generation**
@@ -281,8 +281,8 @@ CREATE TABLE run_log (
 ACCOUNT_HANDLE = "@yourhandle"
 CHROME_PROFILE_PATH = "C:/Users/Gojo/AppData/Local/Google/Chrome/User Data"
 
-# Claude API
-ANTHROPIC_API_KEY = "sk-ant-..."  # store in .env, not here
+# Gemini API
+GEMINI_API_KEY = "AIza..."  # store in .env, not here
 
 # Limits
 MAX_COMMENTS_PER_DAY = 18
@@ -321,7 +321,7 @@ KEYWORDS = [
 
 ## 8. Content Rules (AI Guardrails)
 
-The Claude prompt enforces these rules on every generation:
+The Gemini prompt enforces these rules on every generation:
 
 **Always:**
 - Add genuine value to the conversation
@@ -359,7 +359,7 @@ Lower priority. Monitor only for now, no posting.
 
 **Output:** Daily digest CSV of flagged posts → reviewed manually by Eternal/Ravi
 
-**Implementation:** Python + PRAW (if API access works) or Playwright scrape fallback
+**Implementation:** Python + PRAW (if API access works) or browser scrape fallback
 
 ---
 
@@ -370,7 +370,7 @@ elvan-x-agent/
 ├── orchestrator.py       ← main runner
 ├── session.py            ← browser session
 ├── searcher.py           ← post discovery
-├── ai.py                 ← Claude API wrapper
+├── ai.py                 ← Gemini API wrapper
 ├── poster.py             ← X interaction
 ├── db.py                 ← SQLite handler
 ├── logger.py             ← logging
@@ -390,8 +390,9 @@ elvan-x-agent/
 ## 11. Dependencies
 
 ```
-playwright
-anthropic
+google-genai
+selenium
+undetected-chromedriver
 python-dotenv
 schedule
 sqlite3 (stdlib)
@@ -404,11 +405,12 @@ loguru
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| X detects automation | Medium | Human-like delays, persistent session, jitter on all timing |
+| X detects automation | Medium | Human-like delays, jitter on all timing, conservative daily caps |
 | Account flagged/banned | Low-Medium | Stay within safe limits, avoid aggressive keyword stuffing |
+| New X account gets low reach | High | Warm up manually for 3-5 days with follows, likes, and organic replies before pushing full production volume |
 | AI generates bad comment | Low | Content validation layer, length check, keyword filter for off-brand terms |
 | Duplicate comments | Low | SQLite dedup on post_id before every action |
-| Chrome session expires | Medium | Session health check at start of every run, alert on failure |
+| Login/session expires | Medium | Session health check at start of every run, alert on failure, re-auth with stored credentials if needed |
 | API key exposed | Low | .env file, .gitignore, never hardcoded |
 
 ---
@@ -474,7 +476,7 @@ def send_alert(message: str):
 
 | # | Question | Answer |
 |---|---|---|
-| 1 | Chrome profile path | `C:/Users/Gojo/AppData/Local/Google/Chrome/User Data` |
+| 1 | Chrome session strategy | `undetected-chromedriver` with fresh login instead of reusing a local Chrome profile |
 | 2 | Images in standalone posts | No |
 | 3 | DMs | No — humans handle all direct outreach |
 

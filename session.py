@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
 
 from config import Settings
 from models import SessionHealth
 
 
-CHROME_USER_DATA_DIR = r"C:\Users\resoa\AppData\Local\Google\Chrome\User Data"
 CHROME_EXECUTABLE_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-CHROME_PROFILE_DIRECTORY = "Profile 4"
+CHROMEDRIVER_PATH = r"C:\Users\resoa\AppData\Local\Temp\chromedriver\chromedriver-win64\chromedriver.exe"
 
 
 def _load_uc() -> Any:
@@ -61,10 +59,10 @@ class _SyncKeyboard:
             raise RuntimeError("No active element focused for key press.")
         if key == "Shift+Enter":
             from selenium.webdriver.common.action_chains import ActionChains
-            ActionChains(self.page.driver)\
-                .key_down(Keys.SHIFT)\
-                .send_keys(Keys.ENTER)\
-                .key_up(Keys.SHIFT)\
+            ActionChains(self.page.driver) \
+                .key_down(Keys.SHIFT) \
+                .send_keys(Keys.ENTER) \
+                .key_up(Keys.SHIFT) \
                 .perform()
             return
         element.send_keys(key)
@@ -220,15 +218,10 @@ class BrowserSession:
             return self._page
 
         uc = _load_uc()
-        self.logger.info(
-            "Launching Chrome with undetected-chromedriver using profile %s.",
-            CHROME_PROFILE_DIRECTORY,
-        )
+        self.logger.info("Launching Chrome with undetected-chromedriver (fresh session).")
 
         try:
             options = uc.ChromeOptions()
-            options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
-            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIRECTORY}")
             options.add_argument("--no-first-run")
             options.add_argument("--no-default-browser-check")
             options.add_argument("--disable-notifications")
@@ -237,7 +230,7 @@ class BrowserSession:
             self._driver = uc.Chrome(
                 options=options,
                 browser_executable_path=CHROME_EXECUTABLE_PATH,
-                driver_executable_path=r"C:\Users\resoa\AppData\Local\Temp\chromedriver\chromedriver-win64\chromedriver.exe",
+                driver_executable_path=CHROMEDRIVER_PATH,
                 headless=False,
                 use_subprocess=True,
             )
@@ -247,31 +240,108 @@ class BrowserSession:
 
         except Exception as exc:
             raise RuntimeError(
-                f"Failed to launch Chrome via undetected-chromedriver. Root cause: {exc}"
+                f"Failed to launch Chrome. Root cause: {exc}"
             ) from exc
+
+    def _login_to_x(self, page: _SyncPage) -> None:
+        """Log into X using credentials from settings."""
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        username = self.settings.x_username
+        password = self.settings.x_password
+
+        if not username or not password:
+            raise RuntimeError(
+                "X_USERNAME and X_PASSWORD must be set in .env for fresh login."
+            )
+
+        self.logger.info("Logging into X as %s.", username)
+        page.goto("https://x.com/i/flow/login")
+        time.sleep(3)
+
+        wait = WebDriverWait(self._driver, 20)
+
+        # Step 1 — enter username
+        username_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[autocomplete='username']"))
+        )
+        username_input.click()
+        time.sleep(0.5)
+        for char in username:
+            username_input.send_keys(char)
+            time.sleep(0.05)
+        time.sleep(1)
+
+        # Click Next
+        next_buttons = self._driver.find_elements(By.XPATH, "//span[text()='Next']")
+        if next_buttons:
+            next_buttons[0].click()
+        time.sleep(2)
+
+        # Step 2 — handle unusual activity check (asks for email/phone)
+        unusual_input = self._driver.find_elements(
+            By.CSS_SELECTOR, "input[data-testid='ocfEnterTextTextInput']"
+        )
+        if unusual_input:
+            self.logger.info("Unusual activity check detected — entering username again.")
+            unusual_input[0].click()
+            for char in username:
+                unusual_input[0].send_keys(char)
+                time.sleep(0.05)
+            time.sleep(1)
+            next_btn = self._driver.find_elements(By.XPATH, "//span[text()='Next']")
+            if next_btn:
+                next_btn[0].click()
+            time.sleep(2)
+
+        # Step 3 — enter password
+        password_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='password']"))
+        )
+        password_input.click()
+        time.sleep(0.5)
+        for char in password:
+            password_input.send_keys(char)
+            time.sleep(0.05)
+        time.sleep(1)
+
+        # Click Log in
+        login_buttons = self._driver.find_elements(By.XPATH, "//span[text()='Log in']")
+        if login_buttons:
+            login_buttons[0].click()
+        time.sleep(4)
+
+        self.logger.info("Login flow completed.")
 
     def get_page(self) -> _SyncPage:
         return self.open()
 
     def check_health(self) -> SessionHealth:
         try:
-            page = self.get_page()
-            page.goto("https://x.com/home", wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page = self.open()
+
+            # Navigate to X — will redirect to login if not logged in
+            page.goto("https://x.com/home")
+            time.sleep(3)
+
+            url = page.url
+
+            # If redirected to login, perform login
+            if "login" in url or "/i/flow/login" in url:
+                self._login_to_x(page)
+                time.sleep(3)
+                url = page.url
+
+            # Final check — confirm we're on home
+            if "login" in url or "/i/flow/login" in url:
+                return SessionHealth(ok=False, reason="Login failed — still on login page.")
+
         except Exception as exc:
             return SessionHealth(ok=False, reason=f"Browser navigation failed: {exc}")
 
-        url = page.url
-        if "/login" in url or "/i/flow/login" in url:
-            return SessionHealth(ok=False, reason="X session is logged out.")
-
-        login_input = page.locator("input[name='text']")
-        try:
-            if login_input.count() > 0:
-                return SessionHealth(ok=False, reason="X login screen detected.")
-        except Exception:
-            pass
-
+        # Confirm logged-in UI elements are present
         selectors = [
             "[data-testid='SideNav_NewTweet_Button']",
             "[data-testid='AppTabBar_Home_Link']",

@@ -202,15 +202,14 @@ class XPoster:
 
     def _move_mouse_human_like(self, page: Any) -> None:
         mouse = getattr(page, "mouse", None)
-        viewport = getattr(page, "viewport_size", None) or {"width": 1280, "height": 720}
         if mouse is None:
             return
-        width = max(200, int(viewport.get("width", 1280)))
-        height = max(200, int(viewport.get("height", 720)))
-        for _ in range(3):
-            x = random.randint(20, width - 20)
-            y = random.randint(20, height - 20)
-            mouse.move(x, y, steps=random.randint(5, 12))
+        safe_positions = [(200, 300), (400, 200), (300, 400)]
+        for x, y in safe_positions:
+            try:
+                mouse.move(x, y)
+            except Exception:
+                pass
 
     def _pause_before_submit(self, min_seconds: int, max_seconds: int) -> None:
         self._sleep(random.randint(min_seconds, max_seconds))

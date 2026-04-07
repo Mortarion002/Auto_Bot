@@ -32,6 +32,14 @@ class FakePage:
         return self.mapping.get(selector, FakeLocator(False))
 
 
+class FakeMouse:
+    def __init__(self) -> None:
+        self.moves: list[tuple[int, int]] = []
+
+    def move(self, x: int, y: int) -> None:
+        self.moves.append((x, y))
+
+
 class PosterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -113,3 +121,11 @@ class PosterTests(unittest.TestCase):
             result = self.poster.post_comment(object(), self.post, "Hi", dry_run=False)
         self.assertFalse(result.success)
         self.assertGreaterEqual(warning_mock.call_count, 1)
+
+    def test_move_mouse_human_like_uses_safe_positions(self) -> None:
+        mouse = FakeMouse()
+        page = mock.Mock(mouse=mouse)
+
+        self.poster._move_mouse_human_like(page)
+
+        self.assertEqual(mouse.moves, [(200, 300), (400, 200), (300, 400)])

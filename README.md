@@ -1,6 +1,6 @@
 # Elvan X Agent
 
-Autonomous Phase 1 X agent for Elvan. The agent runs on Windows, launches your installed Chrome via `nodriver`, and supports:
+Autonomous Phase 1 X agent for Elvan. The agent runs on Windows, launches Chrome via `undetected-chromedriver`, and supports:
 
 - `health-check` to confirm the X session is still logged in
 - `engage` to discover posts, generate comments, and reply
@@ -20,13 +20,16 @@ pip install -r requirements.txt
 2. Copy `.env.example` to `.env` and fill in:
 
 - `ACCOUNT_HANDLE`
-- `ANTHROPIC_API_KEY`
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `X_USERNAME`
+- `X_PASSWORD`
 
-3. `nodriver` launches Chrome automatically. The browser path, user data directory, and profile directory are currently defined in `session.py`.
+3. `session.py` launches Chrome automatically with `undetected-chromedriver`.
 
-4. Make sure that the configured Chrome profile is already logged into X.
+4. Set `X_USERNAME` and `X_PASSWORD` in `.env` so the agent can log into X from a fresh session when needed.
 
 ## Commands
 

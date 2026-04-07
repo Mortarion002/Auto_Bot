@@ -60,8 +60,10 @@ class Settings:
     db_path: Path
     logs_dir: Path
     account_handle: str = "@yourhandle"
-    anthropic_api_key: str | None = None
-    anthropic_model: str = "claude-sonnet-4-20250514"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    x_username: str | None = None
+    x_password: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     timezone: str = "Asia/Calcutta"
@@ -109,8 +111,10 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         db_path=root / "agent.db",
         logs_dir=root / "logs",
         account_handle=_env_str("ACCOUNT_HANDLE", "@yourhandle"),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        anthropic_model=_env_str("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
+        gemini_model=_env_str("GEMINI_MODEL", "gemini-2.5-flash"),
+        x_username=os.getenv("X_USERNAME"),
+        x_password=os.getenv("X_PASSWORD"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
         timezone=_env_str("TIMEZONE", "Asia/Calcutta"),

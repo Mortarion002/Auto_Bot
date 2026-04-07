@@ -72,21 +72,24 @@ def _contains_negative_competitor_reference(text: str) -> bool:
     )
 
 
-class AnthropicContentGenerator:
+class GeminiContentGenerator:
     def __init__(self, settings: Settings, logger: Any):
         self.settings = settings
         self.logger = logger
         self.client = self._build_client()
 
     def _build_client(self) -> Any | None:
-        if not self.settings.anthropic_api_key:
+        if not self.settings.gemini_api_key:
             return None
         try:
-            from anthropic import Anthropic
-        except ImportError:  # pragma: no cover - dependency may be missing in tests
-            self.logger.warning("anthropic package not installed; API generation unavailable.")
+            from google import genai
+            return genai.Client(api_key=self.settings.gemini_api_key)
+        except ImportError:
+            self.logger.warning("google-genai not installed; API generation unavailable.")
             return None
-        return Anthropic(api_key=self.settings.anthropic_api_key)
+        except Exception as exc:
+            self.logger.warning("Failed to build Gemini client: %s", exc)
+            return None
 
     def generate_comment(
         self,
@@ -255,22 +258,21 @@ class AnthropicContentGenerator:
             if dry_run:
                 return self._mock_comment(post, allow_elvan_reference)
             raise RuntimeError(
-                "Anthropic API credentials are missing. Set ANTHROPIC_API_KEY or use --dry-run."
+                "Gemini API credentials are missing. Set GEMINI_API_KEY or use --dry-run."
             )
 
-        system_prompt = (
+        prompt = (
             "You are drafting X replies for a technical co-founder building Elvan. "
             "Be specific, peer-like, and useful. Keep replies to 1-3 sentences, "
-            "under 280 characters, no hashtags, no links, and no generic praise."
-        )
-        user_prompt = (
+            "under 280 characters, no hashtags, no links, and no generic praise.\n\n"
             f"Author handle: @{post.author_handle.lstrip('@')}\n"
             f"Keyword context: {post.keyword}\n"
             f"Post text:\n{post.text}\n\n"
             f"Elvan mention allowed: {'yes' if allow_elvan_reference else 'no'}\n"
-            f"Previous validation errors to avoid: {', '.join(feedback) if feedback else 'none'}"
+            f"Previous validation errors to avoid: {', '.join(feedback) if feedback else 'none'}\n\n"
+            "Reply with only the comment text, nothing else."
         )
-        return self._call_model(system_prompt, user_prompt, max_tokens=180)
+        return self._call_model(prompt)
 
     def _generate_standalone_text(
         self,
@@ -284,35 +286,35 @@ class AnthropicContentGenerator:
             if dry_run:
                 return self._mock_standalone(topic_category, allow_elvan_reference)
             raise RuntimeError(
-                "Anthropic API credentials are missing. Set ANTHROPIC_API_KEY or use --dry-run."
+                "Gemini API credentials are missing. Set GEMINI_API_KEY or use --dry-run."
             )
 
-        system_prompt = (
+        prompt = (
             "You are drafting standalone X posts for a technical co-founder building Elvan. "
-            "Open with a strong hook, avoid starting with 'I', stay between 150 and 250 "
-            "characters when possible, and use at most 2 relevant hashtags."
-        )
-        user_prompt = (
+            "Open with a strong hook, avoid starting with 'I', and use at most 2 relevant "
+            "hashtags. Your post MUST be between 150 and 250 characters. Never generate a "
+            "post shorter than 120 characters.\n\n"
             f"Topic category: {topic_category}\n"
             f"Elvan mention allowed: {'yes' if allow_elvan_reference else 'no'}\n"
-            f"Previous validation errors to avoid: {', '.join(feedback) if feedback else 'none'}"
+            f"Previous validation errors to avoid: {', '.join(feedback) if feedback else 'none'}\n\n"
+            "Reply with only the post text, nothing else."
         )
-        return self._call_model(system_prompt, user_prompt, max_tokens=220)
+        return self._call_model(prompt)
 
-    def _call_model(self, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str:
-        response = self.client.messages.create(
-            model=self.settings.anthropic_model,
-            max_tokens=max_tokens,
-            temperature=0.6,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        parts: list[str] = []
-        for item in response.content:
-            text = getattr(item, "text", "")
-            if text:
-                parts.append(text)
-        return " ".join(parts).strip()
+    def _call_model(self, prompt: str) -> str:
+        try:
+            response = self.client.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=prompt,
+                config={
+                    "temperature": 0.6,
+                    "max_output_tokens": 220,
+                },
+            )
+            return response.text.strip()
+        except Exception as exc:
+            self.logger.error("Gemini API call failed: %s", exc)
+            raise RuntimeError(f"Gemini API call failed: {exc}") from exc
 
     def _mock_comment(self, post: DiscoveredPost, allow_elvan_reference: bool) -> str:
         base = (
@@ -361,3 +363,7 @@ class AnthropicContentGenerator:
         if allow_elvan_reference:
             text = text.rstrip() + " We keep seeing this while building Elvan."
         return text[:280]
+
+
+# Alias for backwards compatibility with orchestrator.py imports
+AnthropicContentGenerator = GeminiContentGenerator

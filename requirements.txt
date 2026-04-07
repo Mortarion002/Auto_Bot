@@ -1,5 +1,6 @@
-nodriver
-anthropic
+google-genai
+selenium
+undetected-chromedriver
 python-dotenv
 requests
 loguru
