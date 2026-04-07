@@ -1,6 +1,6 @@
 # Elvan X Agent
 
-Autonomous Phase 1 X agent for Elvan. The agent runs on Windows, attaches to an already-running Chrome instance over the DevTools debug port, and supports:
+Autonomous Phase 1 X agent for Elvan. The agent runs on Windows, launches your installed Chrome via `nodriver`, and supports:
 
 - `health-check` to confirm the X session is still logged in
 - `engage` to discover posts, generate comments, and reply
@@ -15,25 +15,18 @@ Autonomous Phase 1 X agent for Elvan. The agent runs on Windows, attaches to an 
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python -m playwright install chromium
 ```
 
-2. Start Chrome once and leave it running:
-
-```powershell
-chrome.exe --remote-debugging-port=9222 --profile-directory="Profile 1"
-```
-
-3. Copy `.env.example` to `.env` and fill in:
+2. Copy `.env.example` to `.env` and fill in:
 
 - `ACCOUNT_HANDLE`
-- `CHROME_PROFILE_NAME`
-- `CHROME_REMOTE_DEBUG_URL`
 - `ANTHROPIC_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-4. Make sure that Chrome profile is already logged into X.
+3. `nodriver` launches Chrome automatically. The browser path, user data directory, and profile directory are currently defined in `session.py`.
+
+4. Make sure that the configured Chrome profile is already logged into X.
 
 ## Commands
 
@@ -61,8 +54,6 @@ Recommended schedule:
 - `daily-report`: 22:00
 
 The agent applies its own 5-15 minute start jitter on scheduled runs.
-
-If you want Chrome to start automatically at login, add the same debug-port command to Windows Task Scheduler or a startup shortcut before the agent jobs run.
 
 ## Tests
 

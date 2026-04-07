@@ -60,10 +60,6 @@ class Settings:
     db_path: Path
     logs_dir: Path
     account_handle: str = "@yourhandle"
-    chrome_user_data_dir: Path = Path("C:/Users/resoa/AppData/Local/Google/Chrome/User Data")
-    chrome_profile_name: str = "Profile 1"
-    chrome_channel: str = "chrome"
-    chrome_remote_debug_url: str | None = "http://localhost:9222"
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-4-20250514"
     telegram_bot_token: str | None = None
@@ -113,18 +109,6 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         db_path=root / "agent.db",
         logs_dir=root / "logs",
         account_handle=_env_str("ACCOUNT_HANDLE", "@yourhandle"),
-        chrome_user_data_dir=Path(
-            _env_str(
-                "CHROME_USER_DATA_DIR",
-                "C:/Users/resoa/AppData/Local/Google/Chrome/User Data",
-            )
-        ),
-        chrome_profile_name=_env_str("CHROME_PROFILE_NAME", "Profile 1"),
-        chrome_channel=_env_str("CHROME_CHANNEL", "chrome"),
-        chrome_remote_debug_url=_env_str(
-            "CHROME_REMOTE_DEBUG_URL",
-            "http://localhost:9222",
-        ),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_model=_env_str("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),

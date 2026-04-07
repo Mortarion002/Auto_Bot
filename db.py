@@ -335,8 +335,8 @@ class Database:
             FROM commented_posts
             WHERE status = 'success'
               AND commented_at IS NOT NULL
-              AND commented_at >= ?
-              AND commented_at < ?
+              AND julianday(commented_at) >= julianday(?)
+              AND julianday(commented_at) < julianday(?)
             """,
             (start_at, end_at),
         ).fetchone()
@@ -347,8 +347,8 @@ class Database:
             FROM standalone_posts
             WHERE status = 'success'
               AND posted_at IS NOT NULL
-              AND posted_at >= ?
-              AND posted_at < ?
+              AND julianday(posted_at) >= julianday(?)
+              AND julianday(posted_at) < julianday(?)
             """,
             (start_at, end_at),
         ).fetchone()
@@ -357,8 +357,8 @@ class Database:
             """
             SELECT COALESCE(SUM(searches_run), 0) AS count
             FROM run_log
-            WHERE run_at >= ?
-              AND run_at < ?
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
             """,
             (start_at, end_at),
         ).fetchone()
@@ -384,8 +384,8 @@ class Database:
             FROM commented_posts
             WHERE status = 'failed'
               AND commented_at IS NOT NULL
-              AND commented_at >= ?
-              AND commented_at < ?
+              AND julianday(commented_at) >= julianday(?)
+              AND julianday(commented_at) < julianday(?)
             ORDER BY commented_at DESC
             LIMIT 5
             """,
@@ -405,8 +405,8 @@ class Database:
             FROM standalone_posts
             WHERE status = 'failed'
               AND posted_at IS NOT NULL
-              AND posted_at >= ?
-              AND posted_at < ?
+              AND julianday(posted_at) >= julianday(?)
+              AND julianday(posted_at) < julianday(?)
             ORDER BY posted_at DESC
             LIMIT 5
             """,
@@ -424,8 +424,8 @@ class Database:
             """
             SELECT stop_reason, errors
             FROM run_log
-            WHERE run_at >= ?
-              AND run_at < ?
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
               AND (stop_reason IS NOT NULL OR errors IS NOT NULL)
             ORDER BY run_at DESC
             LIMIT 5
