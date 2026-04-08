@@ -6,32 +6,41 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
-DEFAULT_KEYWORDS = [
-    "NPS",
-    "net promoter score",
-    "CSAT",
-    "customer feedback tool",
+PRIORITY_KEYWORDS = [
     "Delighted alternative",
+    "Delighted shutdown",
+    "replacing Delighted",
+    "SurveyMonkey alternative",
+    "Typeform alternative",
+    "customer feedback tool",
+    "NPS tool",
     "survey tool SaaS",
-    "churn rate",
-    "customer retention",
-    "#buildinpublic",
-    "#indiehacker SaaS",
-    "bootstrapped SaaS",
-    "B2B SaaS founder",
-    "Product Hunt launch",
-    "just shipped",
-    "feedback loop",
-    "voice of customer",
-    "customer satisfaction",
-    "survey fatigue",
 ]
+
+ROTATION_KEYWORDS = [
+    "survey fatigue",
+    "low NPS response rate",
+    "NPS response rate",
+    "feedback loop broken",
+    "customers not responding to surveys",
+    "net promoter score",
+    "voice of customer",
+    "feedback loop",
+    "CSAT score",
+    "NPS methodology",
+    "churn feedback",
+    "customer health score",
+]
+
+DEFAULT_KEYWORDS = [*PRIORITY_KEYWORDS, *ROTATION_KEYWORDS]
 
 TOPIC_ROTATION = [
     "NPS insight / data point",
-    "Build-in-public update",
+    "Elvan build-in-public update",
+    "Delighted migration take",
     "CX / customer retention take",
-    "SaaS founder lesson",
+    "SaaS intern / builder perspective",
+    "Survey response rate observation",
     "Contrarian opinion on feedback/surveys",
 ]
 
@@ -68,6 +77,7 @@ class Settings:
     telegram_chat_id: str | None = None
     timezone: str = "Asia/Calcutta"
     dry_run: bool = False
+    warmup_mode: bool = True
     daily_report_time: str = "22:00"
     queue_run_time: str = "08:00"
     queue_max_reply_drafts: int = 25
@@ -80,6 +90,7 @@ class Settings:
     keyword_batch_size: int = 10
     min_valid_posts_before_top_fallback: int = 2
     min_likes: int = 10
+    min_likes_research: int = 5
     max_likes: int = 50000
     max_post_age_hours: int = 48
     comment_delay_min: int = 1200
@@ -96,6 +107,8 @@ class Settings:
     scroll_pause_seconds: int = 2
     post_retry_count: int = 3
     request_timeout_seconds: int = 20
+    priority_keywords: list[str] = field(default_factory=lambda: list(PRIORITY_KEYWORDS))
+    rotation_keywords: list[str] = field(default_factory=lambda: list(ROTATION_KEYWORDS))
     keywords: list[str] = field(default_factory=lambda: list(DEFAULT_KEYWORDS))
     topic_rotation: list[str] = field(default_factory=lambda: list(TOPIC_ROTATION))
 
@@ -122,6 +135,7 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
         timezone=_env_str("TIMEZONE", "Asia/Calcutta"),
         dry_run=_env_bool("DRY_RUN", False),
+        warmup_mode=_env_bool("WARMUP_MODE", True),
         daily_report_time=_env_str("DAILY_REPORT_TIME", "22:00"),
         queue_run_time=_env_str("QUEUE_RUN_TIME", "08:00"),
         queue_max_reply_drafts=_env_int("QUEUE_MAX_REPLY_DRAFTS", 25),
@@ -137,6 +151,7 @@ def load_settings(base_dir: Path | None = None) -> Settings:
             2,
         ),
         min_likes=_env_int("MIN_LIKES", 10),
+        min_likes_research=_env_int("MIN_LIKES_RESEARCH", 5),
         max_likes=_env_int("MAX_LIKES", 50000),
         max_post_age_hours=_env_int("MAX_POST_AGE_HOURS", 48),
         comment_delay_min=_env_int("COMMENT_DELAY_MIN", 1200),

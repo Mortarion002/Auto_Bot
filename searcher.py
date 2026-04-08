@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote_plus, urljoin
 
+from ai import DIRECT_NPS_TERMS
 from config import Settings
 from models import DiscoveredPost
 
@@ -15,6 +16,14 @@ POST_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 METRIC_PATTERN = re.compile(r"(\d+(?:[\d,.]*\d)?)([kmb]?)", re.IGNORECASE)
+KEYWORD_STOPWORDS = {"and", "for", "the", "with", "from", "into", "just", "rate"}
+ENGAGEMENT_LIKES_CAP = 120
+ENGAGEMENT_REPLIES_CAP = 80
+ENGAGEMENT_REPOSTS_CAP = 45.0
+ENGAGED_NICHE_BONUS = 8.0
+RELEVANCE_PHRASE_BONUS = 15.0
+RELEVANCE_TERM_BONUS = 8.0
+RELEVANCE_DIRECT_TERM_BONUS = 5.0
 
 
 def normalize_handle(handle: str) -> str:
@@ -42,10 +51,41 @@ def compute_engagement_score(
     now: datetime | None = None,
 ) -> float:
     current = now or datetime.now(timezone.utc)
-    base = likes + (replies * 2) + (reposts * 1.5)
+    like_score = min(likes, ENGAGEMENT_LIKES_CAP)
+    reply_score = min(replies * 2, ENGAGEMENT_REPLIES_CAP)
+    repost_score = min(reposts * 1.5, ENGAGEMENT_REPOSTS_CAP)
+    base = like_score + reply_score + repost_score
+    if replies >= 4 and likes <= 25 and reposts <= 5:
+        base += ENGAGED_NICHE_BONUS
     age_seconds = (current - created_at.astimezone(timezone.utc)).total_seconds()
     multiplier = 1.5 if age_seconds <= 7200 else 1.0
     return base * multiplier
+
+
+def _keyword_terms(keyword: str) -> tuple[str, ...]:
+    terms = re.findall(r"[a-z0-9]+", keyword.lower())
+    return tuple(
+        term
+        for term in terms
+        if len(term) > 2 and term not in KEYWORD_STOPWORDS
+    )
+
+
+def compute_relevance_bonus(post_text: str, keyword: str) -> float:
+    lowered = post_text.lower()
+    keyword_phrase = keyword.strip().lower()
+    keyword_terms = _keyword_terms(keyword)
+
+    bonus = 0.0
+    if keyword_phrase and keyword_phrase in lowered:
+        bonus += RELEVANCE_PHRASE_BONUS
+    elif any(term in lowered for term in keyword_terms):
+        bonus += RELEVANCE_TERM_BONUS
+
+    if any(term in lowered for term in DIRECT_NPS_TERMS):
+        bonus += RELEVANCE_DIRECT_TERM_BONUS
+
+    return bonus
 
 
 def extract_post_ref(href: str | None) -> tuple[str, str, str] | None:
@@ -98,7 +138,12 @@ class XSearcher:
         ranked = sorted(candidates.values(), key=lambda item: item.score, reverse=True)
         return ranked[: self.settings.top_posts_to_comment], len(keywords)
 
-    def _search_keyword(self, page: Any, keyword: str, mode: str) -> list[DiscoveredPost]:
+    def search_keyword_with_stats(
+        self,
+        page: Any,
+        keyword: str,
+        mode: str,
+    ) -> tuple[list[DiscoveredPost], dict[str, int]]:
         search_url = self._build_search_url(keyword, mode)
         self.logger.info("Searching X for '%s' (%s).", keyword, mode)
         page.goto(search_url, wait_until="domcontentloaded")
@@ -115,6 +160,13 @@ class XSearcher:
             if post is not None:
                 posts.append(post)
 
+        return posts, {
+            "raw_articles": article_count,
+            "scraped_posts": len(posts),
+        }
+
+    def _search_keyword(self, page: Any, keyword: str, mode: str) -> list[DiscoveredPost]:
+        posts, _ = self.search_keyword_with_stats(page, keyword, mode)
         return posts
 
     def _build_search_url(self, keyword: str, mode: str) -> str:
@@ -194,25 +246,63 @@ class XSearcher:
         *,
         record_seen: bool,
     ) -> list[DiscoveredPost]:
+        filtered, _ = self.filter_and_score_posts_with_stats(
+            posts,
+            record_seen=record_seen,
+        )
+        return filtered
+
+    def filter_and_score_posts_with_stats(
+        self,
+        posts: list[DiscoveredPost],
+        *,
+        record_seen: bool,
+        min_likes_override: int | None = None,
+    ) -> tuple[list[DiscoveredPost], dict[str, int]]:
         now = datetime.now(timezone.utc)
         filtered: list[DiscoveredPost] = []
+        min_likes_threshold = (
+            min_likes_override
+            if min_likes_override is not None
+            else self.settings.min_likes
+        )
+        stats = {
+            "input_count": len(posts),
+            "passed": 0,
+            "already_commented": 0,
+            "own_post": 0,
+            "too_old": 0,
+            "low_likes": 0,
+            "high_likes": 0,
+            "irrelevant": 0,
+        }
 
         for post in posts:
             if record_seen:
                 self.db.mark_post_seen(post.post_id, now.isoformat())
             if self.db.has_commented(post.post_id):
+                stats["already_commented"] += 1
                 continue
             if normalize_handle(post.author_handle) == self.settings.normalized_account_handle:
+                stats["own_post"] += 1
                 continue
 
             age_hours = (
                 now - post.created_at.astimezone(timezone.utc)
             ).total_seconds() / 3600
             if age_hours > self.settings.max_post_age_hours:
+                stats["too_old"] += 1
                 continue
-            if post.likes < self.settings.min_likes:
+            if post.likes < min_likes_threshold:
+                stats["low_likes"] += 1
                 continue
             if post.likes > self.settings.max_likes:
+                stats["high_likes"] += 1
+                continue
+
+            relevance_bonus = compute_relevance_bonus(post.text, post.keyword)
+            if relevance_bonus <= 0:
+                stats["irrelevant"] += 1
                 continue
 
             post.score = compute_engagement_score(
@@ -221,10 +311,11 @@ class XSearcher:
                 post.reposts,
                 post.created_at,
                 now=now,
-            )
+            ) + relevance_bonus
+            stats["passed"] += 1
             filtered.append(post)
 
-        return filtered
+        return filtered, stats
 
     def _safe_inner_text(self, locator: Any) -> str:
         try:

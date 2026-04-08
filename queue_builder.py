@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -14,12 +14,12 @@ from models import DiscoveredPost
 from notifier import TelegramNotifier
 from reddit_scraper import DEFAULT_POSTS_PER_SUBREDDIT, RedditScraper
 from reddit_scorer import DIRECT_KEYWORDS, TARGET_SUBREDDITS, RedditLead, rank_posts
-from searcher import XSearcher
+from searcher import XSearcher, compute_engagement_score, compute_relevance_bonus
 from session import BrowserSession
 
 
 X_EXCERPT_LIMIT = 100
-REPLY_DRAFT_LIMIT = 280
+REPLY_DRAFT_LIMIT = 260
 REDDIT_HIGH_PRIORITY_LIMIT = 5
 REDDIT_WORTH_READING_LIMIT = 5
 
@@ -42,6 +42,9 @@ class QueueBuilder:
         self._posts_discovered_count = 0
         self._searches_run_count = 0
         self._dry_run = False
+        self._discovery_summary: str | None = None
+        self._discovery_notes: list[str] = []
+        self._keyword_diagnostics: list[dict[str, Any]] = []
 
     def run(self, *, dry_run: bool = False) -> int:
         started_at = self._timestamp()
@@ -56,6 +59,9 @@ class QueueBuilder:
         self._run_errors = []
         self._posts_discovered_count = 0
         self._searches_run_count = 0
+        self._discovery_summary = None
+        self._discovery_notes = []
+        self._keyword_diagnostics = []
 
         posts_discovered: list[DiscoveredPost] = []
         reply_drafts: list[dict[str, Any]] = []
@@ -122,46 +128,63 @@ class QueueBuilder:
                     )
 
     def _collect_x_posts(self, *, dry_run: bool) -> list[DiscoveredPost]:
+        selected_keywords = self._select_queue_keywords(dry_run=dry_run)
+        self.logger.info(
+            "Starting X discovery across %s selected keywords: %s",
+            len(selected_keywords),
+            ", ".join(selected_keywords),
+        )
         session = BrowserSession(self.settings, self.logger)
         try:
             try:
                 health = session.check_health()
             except Exception as exc:
-                if dry_run:
-                    self.logger.warning("Dry-run X browser session unavailable: %s", exc)
-                    return []
-                raise RuntimeError(f"Browser session failed: {exc}") from exc
+                return self._handle_browser_unavailable(str(exc), dry_run=dry_run)
 
             if not health.ok:
-                if dry_run:
-                    self.logger.warning(
-                        "Dry-run X browser session unavailable: %s",
-                        health.reason,
-                    )
-                    return []
-                raise RuntimeError(health.reason or "Could not confirm a logged-in X session.")
+                return self._handle_browser_unavailable(
+                    health.reason or "Could not confirm a logged-in X session.",
+                    dry_run=dry_run,
+                )
 
             page = session.get_page()
-            self._searches_run_count = len(self.settings.keywords)
-            return self._run_x_search(page)
+            self._searches_run_count = len(selected_keywords)
+            posts = self._run_x_search(page, selected_keywords)
+            self._posts_discovered_count = len(posts)
+            self._discovery_summary = self._build_discovery_summary()
+            return posts
         finally:
             session.close()
 
-    def _run_x_search(self, page: Any) -> list[DiscoveredPost]:
+    def _run_x_search(self, page: Any, keywords: list[str]) -> list[DiscoveredPost]:
         candidates: dict[str, DiscoveredPost] = {}
 
-        for keyword in self.settings.keywords:
+        for keyword in keywords:
             try:
-                live_posts = self.searcher._filter_and_score_posts(  # noqa: SLF001
-                    self.searcher._search_keyword(page, keyword, "live"),  # noqa: SLF001
+                live_scraped_posts, live_search_stats = self.searcher.search_keyword_with_stats(
+                    page,
+                    keyword,
+                    "live",
+                )
+                live_posts, live_filter_stats = self.searcher.filter_and_score_posts_with_stats(
+                    live_scraped_posts,
                     record_seen=not self._dry_run,
+                    min_likes_override=self.settings.min_likes_research,
                 )
                 merged = {post.post_id: post for post in live_posts}
+                top_search_stats = {"raw_articles": 0, "scraped_posts": 0}
+                top_filter_stats = self._empty_filter_stats()
 
                 if len(live_posts) < self.settings.min_valid_posts_before_top_fallback:
-                    top_posts = self.searcher._filter_and_score_posts(  # noqa: SLF001
-                        self.searcher._search_keyword(page, keyword, "top"),  # noqa: SLF001
+                    top_scraped_posts, top_search_stats = self.searcher.search_keyword_with_stats(
+                        page,
+                        keyword,
+                        "top",
+                    )
+                    top_posts, top_filter_stats = self.searcher.filter_and_score_posts_with_stats(
+                        top_scraped_posts,
                         record_seen=not self._dry_run,
+                        min_likes_override=self.settings.min_likes_research,
                     )
                     for post in top_posts:
                         merged.setdefault(post.post_id, post)
@@ -170,6 +193,26 @@ class QueueBuilder:
                     existing = candidates.get(post.post_id)
                     if existing is None or post.score > existing.score:
                         candidates[post.post_id] = post
+
+                diagnostic = self._build_keyword_diagnostic(
+                    keyword=keyword,
+                    live_search_stats=live_search_stats,
+                    top_search_stats=top_search_stats,
+                    live_filter_stats=live_filter_stats,
+                    top_filter_stats=top_filter_stats,
+                    unique_kept=len(merged),
+                )
+                self._keyword_diagnostics.append(diagnostic)
+                self.logger.info(
+                    '[build-queue] Keyword "%s": %s raw articles, %s scraped -> %s passed filter%s (%s dropped: %s)',
+                    keyword,
+                    diagnostic["raw_articles"],
+                    diagnostic["scraped_posts"],
+                    diagnostic["passed_filter"],
+                    diagnostic["duplicate_suffix"],
+                    diagnostic["dropped_count"],
+                    diagnostic["reason_breakdown"],
+                )
             except Exception as exc:
                 message = f"X search failed for keyword '{keyword}': {exc}"
                 self.logger.warning(message)
@@ -177,6 +220,42 @@ class QueueBuilder:
 
         ranked = sorted(candidates.values(), key=lambda item: item.score, reverse=True)
         return ranked
+
+    def _select_queue_keywords(self, *, dry_run: bool) -> list[str]:
+        priority_keywords = self._dedupe_keywords(self.settings.priority_keywords)
+        rotation_keywords = [
+            keyword
+            for keyword in self._dedupe_keywords(self.settings.rotation_keywords)
+            if keyword not in priority_keywords
+        ]
+
+        if not priority_keywords and not rotation_keywords:
+            return self._dedupe_keywords(self.settings.keywords)
+
+        batch_size = max(1, self.settings.keyword_batch_size)
+        selected_priority = priority_keywords[:batch_size]
+        remaining_slots = max(0, batch_size - len(selected_priority))
+        rotated_keywords = self.db.get_rotating_keywords(
+            rotation_keywords,
+            remaining_slots,
+            updated_at=self._timestamp(),
+            advance=not dry_run,
+        )
+        selected_keywords = self._dedupe_keywords(selected_priority + rotated_keywords)
+
+        # If the rotation pool is smaller than the remaining slots, backfill from the
+        # combined keyword list so the queue still uses the configured batch size.
+        if len(selected_keywords) < batch_size:
+            fallback_keywords = [
+                keyword
+                for keyword in self._dedupe_keywords(self.settings.keywords)
+                if keyword not in selected_keywords
+            ]
+            selected_keywords.extend(
+                fallback_keywords[: batch_size - len(selected_keywords)]
+            )
+
+        return selected_keywords[:batch_size]
 
     def _run_reddit_scan(self) -> list[dict[str, Any]]:
         try:
@@ -258,6 +337,12 @@ class QueueBuilder:
                     post.post_id,
                 )
                 continue
+            if len(draft_text) > REPLY_DRAFT_LIMIT:
+                self.logger.info(
+                    "Reply draft %s is %s chars; keeping full validated text because it passed the 280-char validator.",
+                    post.post_id,
+                    len(draft_text),
+                )
 
             drafts.append(
                 {
@@ -270,7 +355,7 @@ class QueueBuilder:
                     "score": post.score,
                     "likes": post.likes,
                     "replies": post.replies,
-                    "draft_comment": self._truncate_text(draft_text, REPLY_DRAFT_LIMIT),
+                    "draft_comment": draft_text,
                     "post_url": post.post_url,
                 }
             )
@@ -341,7 +426,7 @@ class QueueBuilder:
                 {
                     "topic_category": topic_category,
                     "generation_number": generation_number,
-                    "draft_post_text": self._truncate_text(draft_text, REPLY_DRAFT_LIMIT),
+                    "draft_post_text": draft_text,
                 }
             )
 
@@ -393,12 +478,22 @@ class QueueBuilder:
 
     def _build_header_message(self, reply_count: int, post_idea_count: int) -> str:
         now = datetime.now(self.settings.zoneinfo())
-        return (
-            f"🎯 Elvan X Queue — {now.strftime('%B %d, %Y')}\n"
-            f"📬 {self._posts_discovered_count} posts discovered | {reply_count} reply drafts | {post_idea_count} post ideas\n"
-            f"⏰ Generated at {now.strftime('%H:%M')}\n\n"
-            "Review each draft below. Tap the link to open the post, paste the reply, post manually."
+        lines = [
+            f"🎯 Elvan X Queue — {now.strftime('%B %d, %Y')}",
+            f"📬 {self._posts_discovered_count} posts discovered | {reply_count} reply drafts | {post_idea_count} post ideas",
+            f"⏰ Generated at {now.strftime('%H:%M')}",
+        ]
+        if self.settings.warmup_mode:
+            lines.append("⚠️ WARMUP MODE — Manual posting only. Do not use auto-post commands.")
+        if self._discovery_summary:
+            lines.append(f"⚠️ {self._discovery_summary}")
+        lines.extend(
+            [
+                "",
+                "Review each draft below. Tap the link to open the post, paste the reply, post manually.",
+            ]
         )
+        return "\n".join(lines)
 
     def _format_reply_message(self, *, index: int, total: int, draft: dict[str, Any]) -> str:
         return (
@@ -496,7 +591,15 @@ class QueueBuilder:
         cleaned = QueueBuilder._squash_whitespace(text)
         if len(cleaned) <= limit:
             return cleaned
-        return cleaned[:limit]
+        if limit <= 3:
+            return cleaned[:limit]
+        candidate = cleaned[: limit - 3].rstrip()
+        if " " in candidate:
+            candidate = candidate.rsplit(" ", 1)[0]
+        candidate = candidate.rstrip(" ,;:-")
+        if not candidate:
+            candidate = cleaned[: limit - 3].rstrip()
+        return f"{candidate}..."
 
     @staticmethod
     def _contains_getelvan_link(text: str) -> bool:
@@ -508,3 +611,231 @@ class QueueBuilder:
 
     def _timestamp(self) -> str:
         return datetime.now(self.settings.zoneinfo()).isoformat()
+
+    def _handle_browser_unavailable(
+        self,
+        reason: str,
+        *,
+        dry_run: bool,
+    ) -> list[DiscoveredPost]:
+        if dry_run:
+            message = f"Chrome session unavailable: {reason}"
+            self.logger.error(
+                "Dry-run X browser session unavailable: %s. Using mock posts instead.",
+                reason,
+            )
+            self._run_errors.append(message)
+            self._discovery_notes.append(
+                "Low discovery: Chrome session unavailable - using mock posts for dry-run formatting."
+            )
+            mock_posts = self._mock_posts()
+            self._posts_discovered_count = len(mock_posts)
+            self._discovery_summary = self._build_discovery_summary()
+            return mock_posts
+
+        raise RuntimeError(reason)
+
+    @staticmethod
+    def _empty_filter_stats() -> dict[str, int]:
+        return {
+            "input_count": 0,
+            "passed": 0,
+            "already_commented": 0,
+            "own_post": 0,
+            "too_old": 0,
+            "low_likes": 0,
+            "high_likes": 0,
+            "irrelevant": 0,
+        }
+
+    def _build_keyword_diagnostic(
+        self,
+        *,
+        keyword: str,
+        live_search_stats: dict[str, int],
+        top_search_stats: dict[str, int],
+        live_filter_stats: dict[str, int],
+        top_filter_stats: dict[str, int],
+        unique_kept: int,
+    ) -> dict[str, Any]:
+        combined_filter_stats = self._merge_filter_stats(live_filter_stats, top_filter_stats)
+        passed_filter = combined_filter_stats["passed"]
+        duplicate_count = max(0, passed_filter - unique_kept)
+        return {
+            "keyword": keyword,
+            "raw_articles": live_search_stats["raw_articles"] + top_search_stats["raw_articles"],
+            "scraped_posts": live_search_stats["scraped_posts"] + top_search_stats["scraped_posts"],
+            "passed_filter": passed_filter,
+            "unique_kept": unique_kept,
+            "dropped_count": max(0, combined_filter_stats["input_count"] - passed_filter),
+            "duplicate_suffix": (
+                f", {duplicate_count} duplicate(s) merged" if duplicate_count else ""
+            ),
+            "reason_breakdown": self._format_reason_breakdown(combined_filter_stats),
+        }
+
+    @staticmethod
+    def _merge_filter_stats(
+        first: dict[str, int],
+        second: dict[str, int],
+    ) -> dict[str, int]:
+        keys = set(first) | set(second)
+        return {key: first.get(key, 0) + second.get(key, 0) for key in keys}
+
+    @staticmethod
+    def _format_reason_breakdown(stats: dict[str, int]) -> str:
+        labels = {
+            "too_old": "too old",
+            "low_likes": "low likes",
+            "high_likes": "high likes",
+            "already_commented": "already commented",
+            "own_post": "own post",
+            "irrelevant": "irrelevant",
+        }
+        parts = [
+            f"{count} {labels[key]}"
+            for key, count in (
+                ("too_old", stats.get("too_old", 0)),
+                ("low_likes", stats.get("low_likes", 0)),
+                ("high_likes", stats.get("high_likes", 0)),
+                ("already_commented", stats.get("already_commented", 0)),
+                ("own_post", stats.get("own_post", 0)),
+                ("irrelevant", stats.get("irrelevant", 0)),
+            )
+            if count
+        ]
+        return ", ".join(parts) if parts else "no filter drops"
+
+    def _build_discovery_summary(self) -> str | None:
+        if self._discovery_notes:
+            return self._discovery_notes[0]
+        if not self._keyword_diagnostics:
+            return None
+
+        zero_keywords = sum(
+            1
+            for diagnostic in self._keyword_diagnostics
+            if diagnostic["unique_kept"] == 0
+        )
+        if self._posts_discovered_count <= 3:
+            if zero_keywords:
+                return (
+                    f"Low discovery: {zero_keywords} keywords returned 0 results "
+                    "(check logs for drop reasons)."
+                )
+            return (
+                f"Low discovery: only {self._posts_discovered_count} unique X posts surfaced "
+                "(check logs for drop reasons)."
+            )
+
+        if zero_keywords >= max(3, len(self._keyword_diagnostics) // 2):
+            return (
+                f"Low discovery: {zero_keywords} keywords returned 0 results "
+                "(check logs for drop reasons)."
+            )
+        return None
+
+    @staticmethod
+    def _dedupe_keywords(keywords: list[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for keyword in keywords:
+            normalized = keyword.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(keyword)
+        return ordered
+
+    def _mock_posts(self) -> list[DiscoveredPost]:
+        now = datetime.now(timezone.utc)
+        mock_specs = [
+            (
+                "2041800000000000001",
+                "https://x.com/cxsignals/status/2041800000000000001",
+                "@cxsignals",
+                "NPS gets noisy fast when teams ask too early. What timing changes actually improved response quality for you?",
+                18,
+                7,
+                2,
+                2,
+                "NPS",
+            ),
+            (
+                "2041800000000000002",
+                "https://x.com/saasops/status/2041800000000000002",
+                "@saasops",
+                "CSAT is easy to collect and hard to operationalize. How are people segmenting support feedback without creating another dashboard?",
+                14,
+                6,
+                1,
+                4,
+                "CSAT",
+            ),
+            (
+                "2041800000000000003",
+                "https://x.com/founderloop/status/2041800000000000003",
+                "@founderloop",
+                "Looking for a Delighted alternative that works better for B2B onboarding feedback. What are founders switching to right now?",
+                11,
+                5,
+                1,
+                6,
+                "Delighted alternative",
+            ),
+            (
+                "2041800000000000004",
+                "https://x.com/retainbetter/status/2041800000000000004",
+                "@retainbetter",
+                "Churn interviews helped more than another retention dashboard for us. Anyone pairing churn reasons with survey answers in one workflow?",
+                16,
+                8,
+                2,
+                3,
+                "churn rate",
+            ),
+            (
+                "2041800000000000005",
+                "https://x.com/buildsignal/status/2041800000000000005",
+                "@buildsignal",
+                "#buildinpublic update: we changed when we ask for feedback during onboarding and the answer quality jumped almost immediately.",
+                13,
+                4,
+                1,
+                1,
+                "#buildinpublic",
+            ),
+        ]
+        return [
+            DiscoveredPost(
+                post_id=post_id,
+                post_url=post_url,
+                author_handle=author_handle,
+                text=text,
+                likes=likes,
+                replies=replies,
+                reposts=reposts,
+                created_at=now - timedelta(hours=hours_ago),
+                keyword=keyword,
+                search_mode="mock",
+                score=compute_engagement_score(
+                    likes,
+                    replies,
+                    reposts,
+                    now - timedelta(hours=hours_ago),
+                    now=now,
+                )
+                + compute_relevance_bonus(text, keyword),
+            )
+            for (
+                post_id,
+                post_url,
+                author_handle,
+                text,
+                likes,
+                replies,
+                reposts,
+                hours_ago,
+                keyword,
+            ) in mock_specs
+        ]

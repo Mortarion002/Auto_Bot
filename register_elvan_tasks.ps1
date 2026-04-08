@@ -35,7 +35,7 @@ $redditMonitorAction = New-ScheduledTaskAction `
     -Execute "python" `
     -Argument "$workingDirectory\reddit_monitor.py" `
     -WorkingDirectory $workingDirectory
-$redditMonitorTrigger = New-ScheduledTaskTrigger -Daily -At "08:00"
+$redditMonitorTrigger = New-ScheduledTaskTrigger -Daily -At "07:50"
 $redditMonitorSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 Register-ScheduledTask `
     -TaskName "ElvanAgent_Reddit_Monitor" `

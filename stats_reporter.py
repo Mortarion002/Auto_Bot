@@ -57,10 +57,7 @@ class StatsReporter:
             "━━━ X RESEARCH ━━━",
             f"🔍 Posts discovered: {queue_today['posts_discovered']}",
             f"📋 Reply drafts generated: {queue_today['drafts_generated']}",
-            (
-                "📤 Queue sent: "
-                f"{'yes' if queue_today['queue_sent'] else 'no'} at {queue_today['queue_time']}"
-            ),
+            f"📤 Latest queue run: {queue_today['queue_time']}",
             "",
             "━━━ REDDIT MONITOR ━━━",
             f"📋 Posts scanned: {reddit_today['posts_scanned']}",
@@ -76,29 +73,16 @@ class StatsReporter:
         ]
         return "\n".join(lines)
 
-    def _get_queue_stats_today(self) -> dict[str, int | str | bool]:
+    def _get_queue_stats_today(self) -> dict[str, int | str]:
         start_at, end_at, _ = self.db._day_bounds(self.settings.timezone)
         row = self.db.conn.execute(
             """
             SELECT
               COALESCE(SUM(posts_discovered), 0) AS posts_discovered,
-              COALESCE(SUM(drafts_generated), 0) AS drafts_generated,
-              COALESCE(SUM(queue_sent), 0) AS queue_sent
+              COALESCE(SUM(drafts_generated), 0) AS drafts_generated
             FROM queue_runs
             WHERE julianday(run_at) >= julianday(?)
               AND julianday(run_at) < julianday(?)
-            """,
-            (start_at, end_at),
-        ).fetchone()
-        sent_row = self.db.conn.execute(
-            """
-            SELECT run_at
-            FROM queue_runs
-            WHERE julianday(run_at) >= julianday(?)
-              AND julianday(run_at) < julianday(?)
-              AND queue_sent = 1
-            ORDER BY run_at DESC
-            LIMIT 1
             """,
             (start_at, end_at),
         ).fetchone()
@@ -114,14 +98,10 @@ class StatsReporter:
             (start_at, end_at),
         ).fetchone()
 
-        queue_sent = int(row["queue_sent"]) > 0
-        queue_time = self._format_clock_time(
-            sent_row["run_at"] if queue_sent and sent_row else last_row["run_at"] if last_row else None
-        )
+        queue_time = self._format_clock_time(last_row["run_at"] if last_row else None)
         return {
             "posts_discovered": int(row["posts_discovered"]),
             "drafts_generated": int(row["drafts_generated"]),
-            "queue_sent": queue_sent,
             "queue_time": queue_time,
         }
 
@@ -256,8 +236,8 @@ class StatsReporter:
     @staticmethod
     def _format_clock_time(timestamp: str | None) -> str:
         if not timestamp:
-            return "--:--"
+            return "none today"
         try:
             return datetime.fromisoformat(timestamp).strftime("%H:%M")
         except ValueError:
-            return "--:--"
+            return "none today"

@@ -154,6 +154,12 @@ def run_engage(
     *,
     dry_run: bool,
 ) -> int:
+    if settings.warmup_mode:
+        logger.warning(
+            "WARMUP_MODE is enabled; skipping 'engage'. Use 'build-queue' for manual-review drafts only."
+        )
+        return 0
+
     apply_run_jitter(settings, logger, dry_run=dry_run)
     started_at = current_timestamp(settings)
     run_id = db.start_run("engage", started_at)
@@ -311,6 +317,12 @@ def run_publish(
     *,
     dry_run: bool,
 ) -> int:
+    if settings.warmup_mode:
+        logger.warning(
+            "WARMUP_MODE is enabled; skipping 'publish'. Use 'build-queue' for manual-review drafts only."
+        )
+        return 0
+
     apply_run_jitter(settings, logger, dry_run=dry_run)
     started_at = current_timestamp(settings)
     run_id = db.start_run("publish", started_at)
