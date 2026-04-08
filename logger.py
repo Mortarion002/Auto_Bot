@@ -9,6 +9,9 @@ from config import Settings
 
 def setup_logger(settings: Settings) -> logging.Logger:
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
+    if getattr(sys.stdout, "encoding", None) != "utf-8" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     logger = logging.getLogger("elvan_x_agent")
     if logger.handlers:
         return logger

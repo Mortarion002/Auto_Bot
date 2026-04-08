@@ -2,7 +2,7 @@ $tasks = @(
     @{
         Name = "ElvanAgent_Engage_Morning"
         Argument = "orchestrator.py engage"
-        Time = "09:00"
+        Time = "10:00"
     },
     @{
         Name = "ElvanAgent_Engage_Midday"
@@ -12,7 +12,7 @@ $tasks = @(
     @{
         Name = "ElvanAgent_Engage_Evening"
         Argument = "orchestrator.py engage"
-        Time = "17:00"
+        Time = "18:00"
     },
     @{
         Name = "ElvanAgent_Publish_1"
@@ -54,3 +54,17 @@ foreach ($task in $tasks) {
         -Settings $settings `
         -Force
 }
+
+$statsAction = New-ScheduledTaskAction `
+    -Execute "python" `
+    -Argument "C:\Users\resoa\Videos\X_Post\orchestrator.py stats-report" `
+    -WorkingDirectory "C:\Users\resoa\Videos\X_Post"
+$statsTrigger = New-ScheduledTaskTrigger -Daily -At "22:05"
+$statsSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+
+Register-ScheduledTask `
+    -TaskName "ElvanAgent_StatsReport" `
+    -Action $statsAction `
+    -Trigger $statsTrigger `
+    -Settings $statsSettings `
+    -Force
