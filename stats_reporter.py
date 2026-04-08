@@ -38,164 +38,124 @@ class StatsReporter:
 
     def _build_message(self) -> str:
         now = datetime.now(self.settings.zoneinfo())
-        x_today = self._get_x_stats_today()
-        x_week = self._get_x_stats_week()
-        top_keywords = self._get_top_keywords_today()
+        queue_today = self._get_queue_stats_today()
+        queue_week = self._get_queue_stats_week()
         reddit_today = self._get_reddit_stats_today()
         reddit_week = self._get_reddit_stats_week()
         next_run_day = now + timedelta(days=1)
+        next_run_time = self._parse_clock_time(self.settings.queue_run_time)
+        next_run = datetime.combine(
+            next_run_day.date(),
+            next_run_time,
+            tzinfo=self.settings.zoneinfo(),
+        )
 
         lines = [
             "📊 Elvan Agent — Daily Stats",
             f"📅 {now.strftime('%B %d, %Y')}",
             "",
-            "━━━ X AGENT ━━━",
+            "━━━ X RESEARCH ━━━",
+            f"🔍 Posts discovered: {queue_today['posts_discovered']}",
+            f"📋 Reply drafts generated: {queue_today['drafts_generated']}",
             (
-                "💬 Comments: "
-                f"{x_today['comments_posted']}/{self.settings.max_comments_per_day}"
+                "📤 Queue sent: "
+                f"{'yes' if queue_today['queue_sent'] else 'no'} at {queue_today['queue_time']}"
             ),
-            f"📝 Posts: {x_today['standalone_posted']}/{self.settings.max_posts_per_day}",
-            f"🔍 Searches: {x_today['searches_run']}/{self.settings.max_searches_per_day}",
-            f"✅ Success rate: {x_today['success_rate']}%",
-            f"⚠️ Failures: {x_today['failure_count']}",
             "",
-            "🔥 Top keywords today:",
+            "━━━ REDDIT MONITOR ━━━",
+            f"📋 Posts scanned: {reddit_today['posts_scanned']}",
+            f"🎯 Leads found: {reddit_today['leads_found']}",
+            f"🔴 High priority: {reddit_today['high_priority']}",
+            f"🟡 Worth reading: {reddit_today['worth_reading']}",
+            "",
+            "━━━ WEEK SUMMARY ━━━",
+            f"🔍 X posts discovered: {queue_week['posts_discovered']}",
+            f"🎯 Reddit leads found: {reddit_week['reddit_leads']}",
+            "",
+            f"Next run: {next_run.strftime('%B %d, %Y')} {self.settings.queue_run_time}",
         ]
-
-        if top_keywords:
-            lines.extend(
-                [
-                    f"{index}. {keyword} ({hits} hits)"
-                    for index, (keyword, hits) in enumerate(top_keywords, start=1)
-                ]
-            )
-        else:
-            lines.append("No keyword hits today")
-
-        if reddit_today is not None:
-            lines.extend(
-                [
-                    "",
-                    "━━━ REDDIT MONITOR ━━━",
-                    f"📋 Posts scanned: {reddit_today['posts_scanned']}",
-                    f"🎯 Leads found: {reddit_today['leads_found']}",
-                    f"🔴 High priority: {reddit_today['high_priority']}",
-                    f"🟡 Worth reading: {reddit_today['worth_reading']}",
-                ]
-            )
-
-        weekly_reddit_leads = (
-            int(reddit_week["reddit_leads"]) if reddit_week is not None else 0
-        )
-        lines.extend(
-            [
-                "",
-                "━━━ WEEK SUMMARY ━━━",
-                f"💬 Comments this week: {x_week['comments_posted']}",
-                f"📝 Posts this week: {x_week['standalone_posted']}",
-                f"🎯 Reddit leads this week: {weekly_reddit_leads}",
-                "",
-                f"Next run: {next_run_day.strftime('%B %d, %Y')} 09:00",
-            ]
-        )
         return "\n".join(lines)
 
-    def _get_x_stats_today(self) -> dict[str, int | str]:
-        counts = self.db.get_daily_activity_counts(self.settings.timezone)
+    def _get_queue_stats_today(self) -> dict[str, int | str | bool]:
         start_at, end_at, _ = self.db._day_bounds(self.settings.timezone)
-        failure_row = self.db.conn.execute(
+        row = self.db.conn.execute(
             """
-            SELECT COUNT(*) AS count
-            FROM commented_posts
-            WHERE status = 'failed'
-              AND commented_at IS NOT NULL
-              AND julianday(commented_at) >= julianday(?)
-              AND julianday(commented_at) < julianday(?)
+            SELECT
+              COALESCE(SUM(posts_discovered), 0) AS posts_discovered,
+              COALESCE(SUM(drafts_generated), 0) AS drafts_generated,
+              COALESCE(SUM(queue_sent), 0) AS queue_sent
+            FROM queue_runs
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
             """,
             (start_at, end_at),
         ).fetchone()
-        failure_count = int(failure_row["count"])
-        comments_posted = int(counts["comments_posted"])
+        sent_row = self.db.conn.execute(
+            """
+            SELECT run_at
+            FROM queue_runs
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
+              AND queue_sent = 1
+            ORDER BY run_at DESC
+            LIMIT 1
+            """,
+            (start_at, end_at),
+        ).fetchone()
+        last_row = self.db.conn.execute(
+            """
+            SELECT run_at
+            FROM queue_runs
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
+            ORDER BY run_at DESC
+            LIMIT 1
+            """,
+            (start_at, end_at),
+        ).fetchone()
 
-        if failure_count == 0:
-            success_rate = 100
-        else:
-            attempts = comments_posted + failure_count
-            success_rate = self._round_half_up((comments_posted / attempts) * 100)
-
+        queue_sent = int(row["queue_sent"]) > 0
+        queue_time = self._format_clock_time(
+            sent_row["run_at"] if queue_sent and sent_row else last_row["run_at"] if last_row else None
+        )
         return {
-            "day_key": str(counts["day_key"]),
-            "comments_posted": comments_posted,
-            "standalone_posted": int(counts["standalone_posted"]),
-            "searches_run": int(counts["searches_run"]),
-            "success_rate": success_rate,
-            "failure_count": failure_count,
+            "posts_discovered": int(row["posts_discovered"]),
+            "drafts_generated": int(row["drafts_generated"]),
+            "queue_sent": queue_sent,
+            "queue_time": queue_time,
         }
 
-    def _get_x_stats_week(self) -> dict[str, int]:
+    def _get_queue_stats_week(self) -> dict[str, int]:
         start_at, end_at = self._week_bounds()
-        comments_row = self.db.conn.execute(
+        row = self.db.conn.execute(
             """
-            SELECT COUNT(*) AS count
-            FROM commented_posts
-            WHERE status = 'success'
-              AND commented_at IS NOT NULL
-              AND julianday(commented_at) >= julianday(?)
-              AND julianday(commented_at) < julianday(?)
+            SELECT COALESCE(SUM(posts_discovered), 0) AS count
+            FROM queue_runs
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
             """,
             (start_at, end_at),
         ).fetchone()
-        posts_row = self.db.conn.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM standalone_posts
-            WHERE status = 'success'
-              AND posted_at IS NOT NULL
-              AND julianday(posted_at) >= julianday(?)
-              AND julianday(posted_at) < julianday(?)
-            """,
-            (start_at, end_at),
-        ).fetchone()
-        return {
-            "comments_posted": int(comments_row["count"]),
-            "standalone_posted": int(posts_row["count"]),
-        }
+        return {"posts_discovered": int(row["count"])}
 
-    def _get_top_keywords_today(self) -> list[tuple[str, int]]:
-        start_at, end_at, _ = self.db._day_bounds(self.settings.timezone)
-        rows = self.db.conn.execute(
-            """
-            SELECT keyword, COUNT(*) AS hits
-            FROM commented_posts
-            WHERE status = 'success'
-              AND commented_at IS NOT NULL
-              AND keyword IS NOT NULL
-              AND TRIM(keyword) != ''
-              AND julianday(commented_at) >= julianday(?)
-              AND julianday(commented_at) < julianday(?)
-            GROUP BY keyword
-            ORDER BY hits DESC, keyword ASC
-            LIMIT 3
-            """,
-            (start_at, end_at),
-        ).fetchall()
-        return [(str(row["keyword"]), int(row["hits"])) for row in rows]
-
-    def _get_reddit_stats_today(self) -> dict[str, int] | None:
+    def _get_reddit_stats_today(self) -> dict[str, int]:
         conn = self._open_reddit_connection()
         if conn is None:
-            return None
+            return {
+                "posts_scanned": 0,
+                "leads_found": 0,
+                "high_priority": 0,
+                "worth_reading": 0,
+            }
 
         try:
             start_at, end_at, _ = self.db._day_bounds(self.settings.timezone)
-            run_row = conn.execute(
+            scanned_row = conn.execute(
                 """
-                SELECT posts_scanned
+                SELECT COALESCE(SUM(posts_scanned), 0) AS count
                 FROM reddit_run_log
                 WHERE julianday(started_at) >= julianday(?)
                   AND julianday(started_at) < julianday(?)
-                ORDER BY started_at DESC
-                LIMIT 1
                 """,
                 (start_at, end_at),
             ).fetchone()
@@ -217,20 +177,25 @@ class StatsReporter:
 
             leads_found = priority_counts["high"] + priority_counts["medium"]
             return {
-                "posts_scanned": int(run_row["posts_scanned"]) if run_row else 0,
+                "posts_scanned": int(scanned_row["count"]),
                 "leads_found": leads_found,
                 "high_priority": priority_counts["high"],
                 "worth_reading": priority_counts["medium"],
             }
         except Exception:
-            return None
+            return {
+                "posts_scanned": 0,
+                "leads_found": 0,
+                "high_priority": 0,
+                "worth_reading": 0,
+            }
         finally:
             conn.close()
 
-    def _get_reddit_stats_week(self) -> dict[str, int] | None:
+    def _get_reddit_stats_week(self) -> dict[str, int]:
         conn = self._open_reddit_connection()
         if conn is None:
-            return None
+            return {"reddit_leads": 0}
 
         try:
             start_at, end_at = self._week_bounds()
@@ -246,7 +211,7 @@ class StatsReporter:
             ).fetchone()
             return {"reddit_leads": int(row["count"])}
         except Exception:
-            return None
+            return {"reddit_leads": 0}
         finally:
             conn.close()
 
@@ -282,5 +247,17 @@ class StatsReporter:
         return [primary, fallback]
 
     @staticmethod
-    def _round_half_up(value: float) -> int:
-        return int(value + 0.5)
+    def _parse_clock_time(value: str) -> time:
+        try:
+            return datetime.strptime(value, "%H:%M").time()
+        except ValueError:
+            return time(8, 0)
+
+    @staticmethod
+    def _format_clock_time(timestamp: str | None) -> str:
+        if not timestamp:
+            return "--:--"
+        try:
+            return datetime.fromisoformat(timestamp).strftime("%H:%M")
+        except ValueError:
+            return "--:--"

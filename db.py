@@ -72,6 +72,17 @@ class Database:
               updated_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS queue_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_at TEXT,
+              posts_discovered INTEGER DEFAULT 0,
+              drafts_generated INTEGER DEFAULT 0,
+              post_ideas_generated INTEGER DEFAULT 0,
+              reddit_leads INTEGER DEFAULT 0,
+              queue_sent INTEGER DEFAULT 0,
+              errors TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_commented_posts_commented_at
             ON commented_posts(commented_at);
 
@@ -80,6 +91,9 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_run_log_run_at
             ON run_log(run_at);
+
+            CREATE INDEX IF NOT EXISTS idx_queue_runs_run_at
+            ON queue_runs(run_at);
             """
         )
 
@@ -94,6 +108,37 @@ class Database:
         self._ensure_column("run_log", "started_at", "TEXT")
         self._ensure_column("run_log", "finished_at", "TEXT")
         self.conn.commit()
+
+    def log_queue_run(
+        self,
+        *,
+        run_at: str,
+        posts_discovered: int = 0,
+        drafts_generated: int = 0,
+        post_ideas_generated: int = 0,
+        reddit_leads: int = 0,
+        queue_sent: bool = False,
+        errors: str | None = None,
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO queue_runs (
+              run_at, posts_discovered, drafts_generated, post_ideas_generated,
+              reddit_leads, queue_sent, errors
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_at,
+                posts_discovered,
+                drafts_generated,
+                post_ideas_generated,
+                reddit_leads,
+                int(queue_sent),
+                errors,
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {

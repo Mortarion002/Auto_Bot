@@ -14,6 +14,7 @@ from db import Database
 from logger import setup_logger
 from notifier import TelegramNotifier
 from poster import XPoster
+from queue_builder import QueueBuilder
 from searcher import XSearcher
 from stats_reporter import StatsReporter
 from session import BrowserSession
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Elvan X agent orchestrator")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("health-check", "engage", "publish", "daily-report", "stats-report"):
+    for command in ("health-check", "engage", "publish", "daily-report", "stats-report", "build-queue"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--dry-run", action="store_true", help="Avoid live posting.")
 
@@ -487,6 +488,18 @@ def run_stats_report(
     return reporter.run(dry_run=dry_run)
 
 
+def run_build_queue(
+    settings: Settings,
+    logger: Any,
+    db: Database,
+    notifier: TelegramNotifier,
+    *,
+    dry_run: bool,
+) -> int:
+    builder = QueueBuilder(settings, db, logger, notifier)
+    return builder.run(dry_run=dry_run)
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
     parser = build_parser()
@@ -509,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_daily_report(settings, logger, db, notifier, dry_run=settings.dry_run)
         if args.command == "stats-report":
             return run_stats_report(settings, logger, db, notifier, dry_run=settings.dry_run)
+        if args.command == "build-queue":
+            return run_build_queue(settings, logger, db, notifier, dry_run=settings.dry_run)
         parser.error(f"Unsupported command: {args.command}")
         return 2
     finally:
