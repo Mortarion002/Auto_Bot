@@ -356,26 +356,33 @@ class BrowserSession:
             # Inject saved cookies before navigating so X sees an existing session
             cookies_loaded = self._load_cookies()
 
-            # Navigate to X home — redirects to login if session is invalid
-            page.goto("https://x.com/home")
-            time.sleep(3)
-
-            url = page.url
-
-            # If redirected to login, perform fresh login then save cookies
-            if "login" in url or "/i/flow/login" in url:
-                if cookies_loaded:
+            if cookies_loaded:
+                # Try home directly — cookies may restore the session
+                page.goto("https://x.com/home")
+                time.sleep(4)
+                url = page.url
+                # If cookies didn't work, fall through to fresh login below
+                if "login" not in url and "/i/flow/login" not in url:
+                    # May still be on landing page — check for home selectors below
+                    pass
+                else:
                     self.logger.info("Saved cookies did not restore session — performing fresh login.")
+                    self._login_to_x(page)
+                    time.sleep(3)
+                    url = page.url
+                    if "login" not in url and "/i/flow/login" not in url:
+                        self._save_cookies()
+                    if "login" in url or "/i/flow/login" in url:
+                        return SessionHealth(ok=False, reason="Login failed — still on login page.")
+            else:
+                # No cookies — go straight to login page (X no longer reliably redirects)
                 self._login_to_x(page)
                 time.sleep(3)
                 url = page.url
-                # Save cookies immediately after successful login
                 if "login" not in url and "/i/flow/login" not in url:
                     self._save_cookies()
-
-            # Final check — confirm we're on home
-            if "login" in url or "/i/flow/login" in url:
-                return SessionHealth(ok=False, reason="Login failed — still on login page.")
+                if "login" in url or "/i/flow/login" in url:
+                    return SessionHealth(ok=False, reason="Login failed — still on login page.")
 
         except Exception as exc:
             return SessionHealth(ok=False, reason=f"Browser navigation failed: {exc}")
