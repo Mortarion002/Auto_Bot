@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from typing import Any
 
 from config import Settings
@@ -212,6 +214,35 @@ class BrowserSession:
         self.logger = logger
         self._driver: Any = None
         self._page: _SyncPage | None = None
+        self._cookie_path: Path = settings.base_dir / "x_cookies.json"
+
+    def _save_cookies(self) -> None:
+        try:
+            cookies = self._driver.get_cookies()
+            self._cookie_path.write_text(json.dumps(cookies), encoding="utf-8")
+            self.logger.info("X session cookies saved (%d cookies).", len(cookies))
+        except Exception as exc:
+            self.logger.warning("Could not save cookies: %s", exc)
+
+    def _load_cookies(self) -> bool:
+        if not self._cookie_path.exists():
+            return False
+        try:
+            cookies = json.loads(self._cookie_path.read_text(encoding="utf-8"))
+            # Must be on x.com domain before injecting cookies
+            self._driver.get("https://x.com")
+            time.sleep(2)
+            for cookie in cookies:
+                cookie.pop("sameSite", None)
+                try:
+                    self._driver.add_cookie(cookie)
+                except Exception:
+                    pass
+            self.logger.info("X session cookies loaded (%d cookies).", len(cookies))
+            return True
+        except Exception as exc:
+            self.logger.warning("Could not load cookies: %s", exc)
+            return False
 
     def open(self) -> _SyncPage:
         if self._page is not None:
@@ -322,38 +353,60 @@ class BrowserSession:
         try:
             page = self.open()
 
-            # Navigate to X — will redirect to login if not logged in
-            page.goto("https://x.com/home")
-            time.sleep(3)
+            # Inject saved cookies before navigating so X sees an existing session
+            cookies_loaded = self._load_cookies()
 
-            url = page.url
-
-            # If redirected to login, perform login
-            if "login" in url or "/i/flow/login" in url:
+            if cookies_loaded:
+                # Try home directly — cookies may restore the session
+                page.goto("https://x.com/home")
+                time.sleep(4)
+                url = page.url
+                # If cookies didn't work, fall through to fresh login below
+                if "login" not in url and "/i/flow/login" not in url:
+                    # May still be on landing page — check for home selectors below
+                    pass
+                else:
+                    self.logger.info("Saved cookies did not restore session — performing fresh login.")
+                    self._login_to_x(page)
+                    time.sleep(3)
+                    url = page.url
+                    if "login" not in url and "/i/flow/login" not in url:
+                        self._save_cookies()
+                    if "login" in url or "/i/flow/login" in url:
+                        return SessionHealth(ok=False, reason="Login failed — still on login page.")
+            else:
+                # No cookies — go straight to login page (X no longer reliably redirects)
                 self._login_to_x(page)
                 time.sleep(3)
                 url = page.url
-
-            # Final check — confirm we're on home
-            if "login" in url or "/i/flow/login" in url:
-                return SessionHealth(ok=False, reason="Login failed — still on login page.")
+                if "login" not in url and "/i/flow/login" not in url:
+                    self._save_cookies()
+                if "login" in url or "/i/flow/login" in url:
+                    return SessionHealth(ok=False, reason="Login failed — still on login page.")
 
         except Exception as exc:
             return SessionHealth(ok=False, reason=f"Browser navigation failed: {exc}")
 
-        # Confirm logged-in UI elements are present
-        selectors = [
+        # Confirm logged-in UI elements are present — wait up to 15s for React to render
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        css_selectors = [
             "[data-testid='SideNav_NewTweet_Button']",
             "[data-testid='AppTabBar_Home_Link']",
             "[data-testid='primaryColumn']",
         ]
-        for selector in selectors:
-            locator = page.locator(selector).first
-            try:
-                if locator.count() > 0 and locator.is_visible():
-                    return SessionHealth(ok=True, reason="Logged-in X session is healthy.")
-            except Exception:
-                continue
+        try:
+            wait = WebDriverWait(self._driver, 15)
+            wait.until(
+                EC.any_of(
+                    *[EC.visibility_of_element_located((By.CSS_SELECTOR, sel)) for sel in css_selectors]
+                )
+            )
+            return SessionHealth(ok=True, reason="Logged-in X session is healthy.")
+        except Exception:
+            pass
 
         return SessionHealth(
             ok=False,
