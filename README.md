@@ -30,6 +30,44 @@ The X agent can:
 
 The Reddit monitor scans selected subreddits, ranks posts by relevance, deduplicates results, and sends a Telegram digest.
 
+#### Hot Lead Alert System
+
+On top of the regular digest, the monitor applies conversion intent scoring bonuses and fires urgent Telegram alerts for high-value posts before the digest is sent.
+
+**Scoring bonuses (applied after base scoring):**
+
+- **+25 points** — post contains a question mark (`?`) AND any of: `alternative`, `replace`, `replacement`, `looking for`, `recommend`, `switch`, `switching`, `what do you use`, `anyone using`, `anyone tried`, `moved away`, `moved from`, `migrated`, `shut down`, `shutdown`
+- **+10 points** — post mentions `Delighted` anywhere (case-insensitive)
+
+Both bonuses stack.
+
+**Hot lead threshold:** any post with a boosted relevance score ≥ 8 is a "hot lead."
+
+**Per-alert Telegram message** (sent before the digest):
+
+```
+🔥 HOT LEAD — r/{subreddit}
+
+👤 u/{author} · Score: {boosted_score}
+📌 {title}
+
+"{body preview up to 300 chars}..."
+
+💬 Draft comment:
+{Gemini-generated Reddit comment}
+
+🔗 {url}
+
+─────────────────────
+Copy the draft → paste it manually on Reddit
+```
+
+If Gemini comment generation fails, the draft section shows `[Generation failed — reply manually]` and the alert is still sent.
+
+**Digest integration:** hot lead posts appear in the regular digest with a `🔥` prefix on their title so they're visually distinct.
+
+**Deduplication:** once an alert is sent for a post, `hot_lead_alerted = 1` is written to `reddit_monitor.db`. The same post never triggers a second alert across runs.
+
 ## Entry Points
 
 - `orchestrator.py` for the X agent commands
@@ -96,6 +134,8 @@ The main SQLite files are:
 - `reddit_monitor.db`
 
 These files store operational history, run logs, seen items, and daily counters.
+
+`reddit_monitor.db` schema includes a `hot_lead_alerted` column (integer, default 0) in the `reddit_seen_posts` table. This flag is set to 1 after a hot lead Telegram alert is sent for that post, preventing duplicate alerts across runs.
 
 ## Scheduled Tasks
 
