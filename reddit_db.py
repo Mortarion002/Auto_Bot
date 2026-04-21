@@ -33,7 +33,8 @@ class RedditDatabase:
               priority TEXT,
               score REAL,
               created_at TEXT,
-              first_seen TEXT NOT NULL
+              first_seen TEXT NOT NULL,
+              hot_lead_alerted INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS reddit_run_log (
@@ -56,6 +57,16 @@ class RedditDatabase:
             """
         )
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        try:
+            self.conn.execute(
+                "ALTER TABLE reddit_seen_posts ADD COLUMN hot_lead_alerted INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.commit()
+        except Exception:
+            pass  # Column already exists
 
     def start_run(self, started_at: str) -> int:
         cursor = self.conn.execute(
@@ -145,6 +156,20 @@ class RedditDatabase:
                 lead.post.created_at.isoformat(),
                 seen_at,
             ),
+        )
+        self.conn.commit()
+
+    def has_hot_lead_alerted(self, post_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT hot_lead_alerted FROM reddit_seen_posts WHERE post_id = ? LIMIT 1",
+            (post_id,),
+        ).fetchone()
+        return bool(row and row["hot_lead_alerted"])
+
+    def mark_hot_lead_alerted(self, post_id: str) -> None:
+        self.conn.execute(
+            "UPDATE reddit_seen_posts SET hot_lead_alerted = 1 WHERE post_id = ?",
+            (post_id,),
         )
         self.conn.commit()
 
