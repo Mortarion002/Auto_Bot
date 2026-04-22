@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from config import Settings
@@ -8,6 +9,9 @@ try:
     import requests
 except ImportError:  # pragma: no cover - dependency may be missing in tests
     requests = None  # type: ignore[assignment]
+
+TELEGRAM_MAX_RETRIES = 4
+TELEGRAM_RETRY_DELAY_SECONDS = 3
 
 
 class TelegramNotifier:
@@ -32,16 +36,28 @@ class TelegramNotifier:
             "disable_notification": disable_notification,
         }
 
-        try:
-            response = requests.post(
-                url,
-                json=payload,
-                timeout=self.settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
-        except Exception as exc:  # pragma: no cover - network failure path
-            self.logger.warning("Telegram alert failed: %s", exc)
-            return False
+        last_exc: Exception | None = None
+        for attempt in range(1, TELEGRAM_MAX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    timeout=self.settings.request_timeout_seconds,
+                )
+                response.raise_for_status()
+                self.logger.info("Telegram alert sent successfully.")
+                return True
+            except Exception as exc:
+                last_exc = exc
+                if attempt < TELEGRAM_MAX_RETRIES:
+                    self.logger.warning(
+                        "Telegram send attempt %d/%d failed: %s — retrying in %ds...",
+                        attempt,
+                        TELEGRAM_MAX_RETRIES,
+                        exc,
+                        TELEGRAM_RETRY_DELAY_SECONDS,
+                    )
+                    time.sleep(TELEGRAM_RETRY_DELAY_SECONDS)
 
-        self.logger.info("Telegram alert sent successfully.")
-        return True
+        self.logger.warning("Telegram alert failed after %d attempts: %s", TELEGRAM_MAX_RETRIES, last_exc)
+        return False
