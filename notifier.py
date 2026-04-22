@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 import re
 import subprocess
 import time
@@ -12,10 +14,12 @@ try:
 except ImportError:  # pragma: no cover - dependency may be missing in tests
     requests = None  # type: ignore[assignment]
 
+
 TELEGRAM_MAX_RETRIES = 4
 TELEGRAM_RETRY_DELAY_SECONDS = 3
 DNS_FALLBACK_SERVER = "1.1.1.1"
 TELEGRAM_HOST = "api.telegram.org"
+TELEGRAM_MESSAGE_LIMIT = 4000
 IPV4_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
@@ -29,6 +33,37 @@ class TelegramNotifier:
             self.logger.warning("Telegram credentials not configured; alert skipped.")
             return False
 
+        chunks = self._split_message(self._sanitize_message(message))
+        if not chunks:
+            self.logger.warning(
+                "Telegram alert skipped because message is empty after sanitization."
+            )
+            return False
+
+        if len(chunks) > 1:
+            self.logger.info(
+                "Telegram message split into %d chunk(s) to stay within API limits.",
+                len(chunks),
+            )
+
+        for index, chunk in enumerate(chunks, start=1):
+            if not self._send_single_alert(
+                chunk,
+                disable_notification=disable_notification,
+                chunk_index=index,
+                chunk_total=len(chunks),
+            ):
+                return False
+        return True
+
+    def _send_single_alert(
+        self,
+        message: str,
+        *,
+        disable_notification: bool,
+        chunk_index: int,
+        chunk_total: int,
+    ) -> bool:
         url = (
             f"https://{TELEGRAM_HOST}/bot{self.settings.telegram_bot_token}/sendMessage"
         )
@@ -37,6 +72,9 @@ class TelegramNotifier:
             "text": message,
             "disable_notification": disable_notification,
         }
+        chunk_label = (
+            f" chunk {chunk_index}/{chunk_total}" if chunk_total > 1 else ""
+        )
 
         if requests is not None:
             last_exc: Exception | None = None
@@ -48,38 +86,57 @@ class TelegramNotifier:
                         timeout=self.settings.request_timeout_seconds,
                     )
                     response.raise_for_status()
-                    self.logger.info("Telegram alert sent successfully.")
+                    self.logger.info("Telegram alert sent successfully%s.", chunk_label)
                     return True
                 except Exception as exc:
                     last_exc = exc
                     if self._looks_like_dns_failure(exc):
-                        self.logger.info("Retrying Telegram send with DNS-resolve fallback.")
+                        self.logger.info(
+                            "Retrying Telegram send with DNS-resolve fallback%s.",
+                            chunk_label,
+                        )
                         return self._send_with_curl_resolve(
                             message,
                             disable_notification=disable_notification,
                         )
+                    error_detail = self._http_error_detail(exc)
                     if attempt < TELEGRAM_MAX_RETRIES:
                         self.logger.warning(
-                            "Telegram send attempt %d/%d failed: %s — retrying in %ds...",
+                            "Telegram send attempt %d/%d failed%s: %s%s retrying in %ds...",
                             attempt,
                             TELEGRAM_MAX_RETRIES,
+                            chunk_label,
                             exc,
+                            error_detail,
                             TELEGRAM_RETRY_DELAY_SECONDS,
                         )
                         time.sleep(TELEGRAM_RETRY_DELAY_SECONDS)
 
             self.logger.warning(
-                "Telegram alert failed after %d attempts: %s",
+                "Telegram alert failed after %d attempts%s: %s%s",
                 TELEGRAM_MAX_RETRIES,
+                chunk_label,
                 last_exc,
+                self._http_error_detail(last_exc),
             )
             return False
 
-        self.logger.warning("requests is not installed; trying curl-based Telegram fallback.")
+        self.logger.warning(
+            "requests is not installed; trying curl-based Telegram fallback%s.",
+            chunk_label,
+        )
         return self._send_with_curl_resolve(
             message,
             disable_notification=disable_notification,
         )
+
+    def persist_failed_message(self, channel: str, message: str) -> Path:
+        self.settings.delivery_failures_dir.mkdir(parents=True, exist_ok=True)
+        safe_channel = re.sub(r"[^a-z0-9_-]+", "-", channel.lower()).strip("-") or "message"
+        timestamp = datetime.now(self.settings.zoneinfo()).strftime("%Y%m%d_%H%M%S_%f")
+        path = self.settings.delivery_failures_dir / f"{timestamp}_{safe_channel}.txt"
+        path.write_text(self._sanitize_message(message), encoding="utf-8")
+        return path
 
     def _send_with_curl_resolve(
         self,
@@ -89,7 +146,9 @@ class TelegramNotifier:
     ) -> bool:
         resolved_ip = self._resolve_telegram_ipv4()
         if resolved_ip is None:
-            self.logger.warning("Telegram fallback failed: could not resolve Telegram API host.")
+            self.logger.warning(
+                "Telegram fallback failed: could not resolve Telegram API host."
+            )
             return False
 
         curl_path = self._find_curl()
@@ -186,3 +245,54 @@ class TelegramNotifier:
             if result.stdout:
                 return candidate
         return None
+
+    @staticmethod
+    def _sanitize_message(message: str) -> str:
+        normalized = (
+            message.replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\x00", "")
+        )
+        return normalized.strip()
+
+    @staticmethod
+    def _split_message(message: str) -> list[str]:
+        if not message:
+            return []
+        if len(message) <= TELEGRAM_MESSAGE_LIMIT:
+            return [message]
+
+        chunks: list[str] = []
+        remaining = message
+        while len(remaining) > TELEGRAM_MESSAGE_LIMIT:
+            split_at = remaining.rfind("\n", 0, TELEGRAM_MESSAGE_LIMIT + 1)
+            if split_at < TELEGRAM_MESSAGE_LIMIT // 2:
+                split_at = remaining.rfind(" ", 0, TELEGRAM_MESSAGE_LIMIT + 1)
+            if split_at < TELEGRAM_MESSAGE_LIMIT // 2:
+                split_at = TELEGRAM_MESSAGE_LIMIT
+
+            chunk = remaining[:split_at].strip()
+            if not chunk:
+                chunk = remaining[:TELEGRAM_MESSAGE_LIMIT].strip()
+                split_at = TELEGRAM_MESSAGE_LIMIT
+
+            chunks.append(chunk)
+            remaining = remaining[split_at:].strip()
+
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    @staticmethod
+    def _http_error_detail(exc: Exception | None) -> str:
+        response = getattr(exc, "response", None)
+        if response is None:
+            return ""
+        try:
+            body = response.text.strip()
+        except Exception:
+            return ""
+        if not body:
+            return ""
+        compact = " ".join(body.split())
+        return f" | response: {compact[:300]}"

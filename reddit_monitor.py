@@ -226,6 +226,25 @@ def _dedupe_posts(posts: list[RedditPost]) -> list[RedditPost]:
     return list(unique_posts.values())
 
 
+def _send_preserved_message(
+    notifier: TelegramNotifier,
+    logger: Any,
+    *,
+    label: str,
+    message: str,
+    errors: list[str],
+) -> bool:
+    sent = notifier.send_alert(message)
+    if sent:
+        return True
+
+    archived_path = notifier.persist_failed_message(label, message)
+    error = f"Failed to send {label} Telegram message."
+    errors.append(error)
+    logger.error("%s Saved a copy to %s.", error, archived_path)
+    return False
+
+
 def run_monitor(
     settings: Settings,
     logger: Any,
@@ -323,12 +342,26 @@ def run_monitor(
                 alert_msg = _build_hot_lead_alert(
                     lead, boosted_scores[lead.post.post_id], comment
                 )
-                sent = notifier.send_alert(alert_msg)
+                sent = _send_preserved_message(
+                    notifier,
+                    logger,
+                    label=f"reddit-hot-lead-{lead.post.post_id}",
+                    message=alert_msg,
+                    errors=errors,
+                )
                 if sent:
                     hot_lead_alerts_sent += 1
                     db.mark_hot_lead_alerted(lead.post.post_id)
 
-            digest_sent = notifier.send_alert(message)
+            digest_sent = _send_preserved_message(
+                notifier,
+                logger,
+                label="reddit-digest",
+                message=message,
+                errors=errors,
+            )
+            if not digest_sent:
+                return 1
 
         logger.info("Hot lead alerts sent: %d", hot_lead_alerts_sent)
         return 0

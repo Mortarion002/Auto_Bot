@@ -17,6 +17,22 @@ class DummyNotifier:
     def send_alert(self, message: str, disable_notification: bool = False) -> bool:
         return True
 
+    def persist_failed_message(self, channel: str, message: str) -> Path:
+        return Path(channel)
+
+
+class FailingNotifier:
+    def __init__(self, base_dir: Path):
+        self.base_dir = base_dir
+
+    def send_alert(self, message: str, disable_notification: bool = False) -> bool:
+        return False
+
+    def persist_failed_message(self, channel: str, message: str) -> Path:
+        path = self.base_dir / f"{channel}.txt"
+        path.write_text(message, encoding="utf-8")
+        return path
+
 
 class QueueBuilderTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -105,6 +121,51 @@ class QueueBuilderTests(unittest.TestCase):
         assert reddit_message is not None
         self.assertIn("REDDIT LEADS TODAY", reddit_message)
         self.assertNotIn("replying manually", reddit_message.lower())
+
+    def test_run_does_not_mark_seen_when_delivery_fails(self) -> None:
+        self.builder = QueueBuilder(
+            self.settings,
+            self.db,
+            self.logger,
+            FailingNotifier(self.base_dir),
+        )
+        now = datetime.now(timezone.utc)
+        post = DiscoveredPost(
+            post_id="post-delivery-fail",
+            post_url="https://x.com/test/status/post-delivery-fail",
+            author_handle="@founder",
+            text="We are reevaluating our feedback stack.",
+            likes=18,
+            replies=4,
+            reposts=1,
+            created_at=now,
+            keyword="feedback tool",
+            search_mode="live",
+            score=36.0,
+        )
+        finding = {
+            "post_id": post.post_id,
+            "author_handle": "founder",
+            "keyword": post.keyword,
+            "post_text_excerpt": post.text,
+            "score": post.score,
+            "likes": post.likes,
+            "replies": post.replies,
+            "response_suggestion": None,
+            "post_url": post.post_url,
+        }
+
+        with mock.patch.object(self.builder, "_collect_x_posts", return_value=[post]), mock.patch.object(
+            self.builder, "_run_reddit_scan", return_value=[]
+        ), mock.patch.object(
+            self.builder, "_build_x_findings", return_value=[finding]
+        ):
+            result = self.builder.run(dry_run=False)
+
+        self.assertEqual(result, 1)
+        self.assertFalse(self.db.has_seen(post.post_id))
+        archived_files = list(self.base_dir.glob("queue-*.txt"))
+        self.assertTrue(archived_files)
 
 
 if __name__ == "__main__":

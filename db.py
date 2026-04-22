@@ -357,30 +357,6 @@ class Database:
             self.set_state("keyword_cursor", str(cursor + len(selected)), updated_at)
         return selected
 
-    def get_next_topic(
-        self,
-        topics: list[str],
-        *,
-        updated_at: str,
-        advance: bool = True,
-    ) -> tuple[str, int, bool]:
-        if not topics:
-            raise ValueError("Topic rotation cannot be empty.")
-
-        cursor = self.get_int_state("topic_cursor", 0)
-        topic = topics[cursor % len(topics)]
-        generation_number = cursor + 1
-        allow_elvan_reference = generation_number % 3 == 0
-        if advance:
-            self.set_state("topic_cursor", str(cursor + 1), updated_at)
-        return topic, generation_number, allow_elvan_reference
-
-    def get_consecutive_comment_failures(self) -> int:
-        return self.get_int_state("consecutive_comment_failures", 0)
-
-    def set_consecutive_comment_failures(self, value: int, updated_at: str) -> None:
-        self.set_state("consecutive_comment_failures", str(value), updated_at)
-
     def _day_bounds(
         self,
         timezone_name: str,

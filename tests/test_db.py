@@ -74,7 +74,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(row["comment_text"], "Second draft")
         self.assertEqual(row["status"], "success")
 
-    def test_daily_counts_and_rotation_state(self) -> None:
+    def test_daily_counts_and_keyword_rotation_state(self) -> None:
         now = datetime.now(timezone.utc)
         post = DiscoveredPost(
             post_id="xyz789",
@@ -128,30 +128,6 @@ class DatabaseTests(unittest.TestCase):
             advance=True,
         )
         self.assertEqual(keywords, ["three", "one"])
-
-    def test_topic_rotation_and_consecutive_failures(self) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        first = self.db.get_next_topic(
-            ["t1", "t2", "t3"],
-            updated_at=now,
-            advance=True,
-        )
-        second = self.db.get_next_topic(
-            ["t1", "t2", "t3"],
-            updated_at=now,
-            advance=True,
-        )
-        third = self.db.get_next_topic(
-            ["t1", "t2", "t3"],
-            updated_at=now,
-            advance=True,
-        )
-        self.assertEqual(first, ("t1", 1, False))
-        self.assertEqual(second, ("t2", 2, False))
-        self.assertEqual(third, ("t3", 3, True))
-
-        self.db.set_consecutive_comment_failures(2, now)
-        self.assertEqual(self.db.get_consecutive_comment_failures(), 2)
 
     def test_mark_posts_seen_tracks_unique_ids(self) -> None:
         now = datetime.now(timezone.utc).isoformat()

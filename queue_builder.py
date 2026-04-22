@@ -80,17 +80,24 @@ class QueueBuilder:
             reddit_leads = self._run_reddit_scan()
             x_findings = self._build_x_findings(posts_discovered, dry_run=dry_run)
 
-            self._send_queue(
+            queue_sent = self._send_queue(
                 x_findings,
                 reddit_leads,
                 dry_run=dry_run,
             )
-            queue_sent = not dry_run
             if not dry_run:
-                self.db.mark_posts_seen(
-                    [finding["post_id"] for finding in x_findings],
-                    self._timestamp(),
-                )
+                if queue_sent:
+                    self.db.mark_posts_seen(
+                        [finding["post_id"] for finding in x_findings],
+                        self._timestamp(),
+                    )
+                else:
+                    stop_reason = "Failed to deliver one or more queue messages to Telegram."
+                    self._run_errors.append(stop_reason)
+                    self.logger.error(
+                        "Research digest was generated but not fully delivered to Telegram."
+                    )
+                    return 1
 
             self.logger.info(
                 "Research digest finished: %s posts discovered, %s X findings, %s response suggestions, %s reddit leads.",
@@ -365,7 +372,7 @@ class QueueBuilder:
         reddit_leads: list[dict[str, Any]],
         *,
         dry_run: bool,
-    ) -> None:
+    ) -> bool:
         messages: list[str] = [
             self._build_header_message(x_findings, reddit_leads),
         ]
@@ -388,16 +395,47 @@ class QueueBuilder:
 
         messages.append(self._build_footer_message())
 
-        for message in messages:
-            self._deliver_message(message, dry_run=dry_run)
+        all_sent = True
+        for index, message in enumerate(messages, start=1):
+            label = self._queue_message_label(index=index, message=message)
+            delivered = self._deliver_message(
+                message,
+                dry_run=dry_run,
+                label=label,
+            )
+            all_sent = all_sent and delivered
+        return all_sent
 
-    def _deliver_message(self, message: str, *, dry_run: bool) -> None:
+    def _deliver_message(self, message: str, *, dry_run: bool, label: str) -> bool:
         if dry_run:
             self.logger.info("%s", message)
-            return
+            return True
 
         if not self.notifier.send_alert(message):
-            raise RuntimeError("Failed to send queue message to Telegram.")
+            archived_path = self.notifier.persist_failed_message(
+                f"queue-{label}",
+                message,
+            )
+            self.logger.error(
+                "Failed to send queue message '%s' to Telegram. Saved a copy to %s.",
+                label,
+                archived_path,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _queue_message_label(*, index: int, message: str) -> str:
+        first_line = message.splitlines()[0].strip().lower() if message else ""
+        if first_line.startswith("x finding"):
+            return f"x-finding-{index}"
+        if first_line.startswith("reddit leads today"):
+            return f"reddit-leads-{index}"
+        if first_line.startswith("research digest complete"):
+            return f"footer-{index}"
+        if first_line.startswith("elvan social research digest"):
+            return f"header-{index}"
+        return f"message-{index}"
 
     def _legacy_build_header_message(self, reply_count: int, post_idea_count: int) -> str:
         now = datetime.now(self.settings.zoneinfo())
@@ -406,7 +444,7 @@ class QueueBuilder:
             f"📬 {self._posts_discovered_count} posts discovered | {reply_count} reply drafts | {post_idea_count} post ideas",
             f"⏰ Generated at {now.strftime('%H:%M')}",
         ]
-        if self.settings.warmup_mode:
+        if False:
             lines.append("⚠️ WARMUP MODE — Manual posting only. Do not use auto-post commands.")
         if self._discovery_summary:
             lines.append(f"⚠️ {self._discovery_summary}")

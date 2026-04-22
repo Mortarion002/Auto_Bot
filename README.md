@@ -10,6 +10,7 @@ This project scans X and Reddit, ranks relevant conversations, generates optiona
 - Surfaces notable Reddit leads
 - Generates optional response suggestions for X findings
 - Sends research digests and stats reports through Telegram
+- Preserves failed Telegram deliveries in `delivery_failures/` for manual recovery
 - Tracks run history, seen items, and failures in SQLite
 - Runs on a schedule through Windows Task Scheduler
 
@@ -110,6 +111,9 @@ python reddit_monitor.py
 - `notifier.py` sends Telegram messages
 - `logger.py` configures logging
 
+For an operational map of the current stages and safe cleanup boundaries, see `PROJECT_STAGES.md`.
+For a classification of active vs legacy features, see `FEATURE_INVENTORY.md`.
+
 ## Configuration
 
 The project reads settings from `.env` and environment variables.
@@ -129,6 +133,10 @@ The main SQLite files are:
 
 - `agent.db`
 - `reddit_monitor.db`
+
+Failed Telegram deliveries are preserved as timestamped text files in:
+
+- `delivery_failures/`
 
 These files store operational history, seen items, run logs, and research summaries.
 

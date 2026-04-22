@@ -34,25 +34,6 @@ class AIGuardrailTests(unittest.TestCase):
             draft.validation_errors,
         )
 
-    def test_standalone_validation_enforces_hook_length_and_hashtag_count(self) -> None:
-        draft = self.generator.validate_standalone_post(
-            "I think #one #two #three",
-            topic_category="SaaS founder lesson",
-            allow_elvan_reference=False,
-        )
-        self.assertIn(
-            "Standalone post should be at least 120 characters.",
-            draft.validation_errors,
-        )
-        self.assertIn(
-            "Standalone post cannot contain more than 2 hashtags.",
-            draft.validation_errors,
-        )
-        self.assertIn(
-            "Standalone post hook cannot start with 'I'.",
-            draft.validation_errors,
-        )
-
     def test_dry_run_generation_returns_valid_comment_for_direct_feedback_post(self) -> None:
         post = DiscoveredPost(
             post_id="nps-1",
@@ -70,12 +51,3 @@ class AIGuardrailTests(unittest.TestCase):
         draft = self.generator.generate_comment(post, dry_run=True)
         self.assertFalse(draft.validation_errors)
         self.assertLessEqual(draft.char_count, 280)
-
-    def test_dry_run_generation_returns_valid_standalone_post(self) -> None:
-        draft = self.generator.generate_standalone_post(
-            "SaaS founder lesson",
-            allow_elvan_reference=False,
-            dry_run=True,
-        )
-        self.assertFalse(draft.validation_errors)
-        self.assertGreaterEqual(draft.char_count, 120)

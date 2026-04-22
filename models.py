@@ -29,23 +29,6 @@ class CommentDraft:
 
 
 @dataclass(slots=True)
-class StandaloneDraft:
-    text: str
-    topic_category: str
-    char_count: int
-    is_thread: bool
-    mentions_elvan: bool
-    validation_errors: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class PosterResult:
-    success: bool
-    submitted: bool
-    reason: str = ""
-
-
-@dataclass(slots=True)
 class SessionHealth:
     ok: bool
     reason: str = ""

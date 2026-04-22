@@ -24,6 +24,11 @@ logs/
 *.log
 
 Guides/
+.claude/
+chrome_profile/
+delivery_failures/
+x_cookies.json
+x-keys.txt
 
 .DS_Store
 Thumbs.db
