@@ -1,3 +1,4 @@
+$pythonPath = "C:\Users\resoa\AppData\Local\Programs\Python\Python313\python.exe"
 $workingDirectory = "C:\Users\resoa\Videos\X_Post"
 
 $legacyTasks = @(
@@ -7,7 +8,8 @@ $legacyTasks = @(
     "ElvanAgent_Publish_1",
     "ElvanAgent_Publish_2",
     "ElvanAgent_Publish_3",
-    "ElvanAgent_Daily_Report"
+    "ElvanAgent_Daily_Report",
+    "ElvanAgent_DailyReport"
 )
 
 foreach ($taskName in $legacyTasks) {
@@ -19,7 +21,7 @@ foreach ($taskName in $legacyTasks) {
 }
 
 $buildQueueAction = New-ScheduledTaskAction `
-    -Execute "python" `
+    -Execute $pythonPath `
     -Argument "$workingDirectory\orchestrator.py build-queue" `
     -WorkingDirectory $workingDirectory
 $buildQueueTrigger = New-ScheduledTaskTrigger -Daily -At "08:00"
@@ -32,7 +34,7 @@ Register-ScheduledTask `
     -Force
 
 $redditMonitorAction = New-ScheduledTaskAction `
-    -Execute "python" `
+    -Execute $pythonPath `
     -Argument "$workingDirectory\reddit_monitor.py" `
     -WorkingDirectory $workingDirectory
 $redditMonitorTrigger = New-ScheduledTaskTrigger -Daily -At "07:50"
@@ -44,21 +46,8 @@ Register-ScheduledTask `
     -Settings $redditMonitorSettings `
     -Force
 
-$dailyReportAction = New-ScheduledTaskAction `
-    -Execute "python" `
-    -Argument "$workingDirectory\orchestrator.py daily-report" `
-    -WorkingDirectory $workingDirectory
-$dailyReportTrigger = New-ScheduledTaskTrigger -Daily -At "22:00"
-$dailyReportSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)
-Register-ScheduledTask `
-    -TaskName "ElvanAgent_DailyReport" `
-    -Action $dailyReportAction `
-    -Trigger $dailyReportTrigger `
-    -Settings $dailyReportSettings `
-    -Force
-
 $statsReportAction = New-ScheduledTaskAction `
-    -Execute "python" `
+    -Execute $pythonPath `
     -Argument "$workingDirectory\orchestrator.py stats-report" `
     -WorkingDirectory $workingDirectory
 $statsReportTrigger = New-ScheduledTaskTrigger -Daily -At "22:05"

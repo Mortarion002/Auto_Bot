@@ -269,7 +269,7 @@ class XSearcher:
         stats = {
             "input_count": len(posts),
             "passed": 0,
-            "already_commented": 0,
+            "already_seen": 0,
             "own_post": 0,
             "too_old": 0,
             "low_likes": 0,
@@ -278,10 +278,8 @@ class XSearcher:
         }
 
         for post in posts:
-            if record_seen:
-                self.db.mark_post_seen(post.post_id, now.isoformat())
-            if self.db.has_commented(post.post_id):
-                stats["already_commented"] += 1
+            if record_seen and self.db.has_seen(post.post_id):
+                stats["already_seen"] += 1
                 continue
             if normalize_handle(post.author_handle) == self.settings.normalized_account_handle:
                 stats["own_post"] += 1

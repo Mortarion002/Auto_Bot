@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from config import Settings
@@ -396,6 +397,12 @@ class GeminiContentGenerator:
             )
             return response.text.strip()
         except Exception as exc:
+            error_str = str(exc)
+            if "429" in error_str or "503" in error_str:
+                self.logger.warning(
+                    "Gemini rate limit or overload hit; waiting 65 seconds before retry."
+                )
+                time.sleep(65)
             self.logger.error("Gemini API call failed: %s", exc)
             raise RuntimeError(f"Gemini API call failed: {exc}") from exc
 

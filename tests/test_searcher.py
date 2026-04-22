@@ -80,7 +80,7 @@ class SearcherHelperTests(unittest.TestCase):
                 post_id="good",
                 post_url="https://x.com/other/status/good",
                 author_handle="other",
-                text="Good post",
+                text="Good NPS post",
                 likes=40,
                 replies=5,
                 reposts=2,
@@ -91,3 +91,29 @@ class SearcherHelperTests(unittest.TestCase):
         ]
         filtered = self.searcher._filter_and_score_posts(posts, record_seen=False)
         self.assertEqual([post.post_id for post in filtered], ["good"])
+
+    def test_filtering_skips_previously_seen_posts_when_recording_is_enabled(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.db.mark_post_seen("seen-post", now.isoformat())
+        posts = [
+            DiscoveredPost(
+                post_id="seen-post",
+                post_url="https://x.com/other/status/seen-post",
+                author_handle="other",
+                text="Fresh NPS post",
+                likes=40,
+                replies=5,
+                reposts=2,
+                created_at=now - timedelta(minutes=20),
+                keyword="NPS",
+                search_mode="live",
+            )
+        ]
+
+        filtered, stats = self.searcher.filter_and_score_posts_with_stats(
+            posts,
+            record_seen=True,
+        )
+
+        self.assertEqual(filtered, [])
+        self.assertEqual(stats["already_seen"], 1)

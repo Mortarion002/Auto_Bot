@@ -103,7 +103,7 @@ class DatabaseTests(unittest.TestCase):
             status_reason="submitted",
             posted_at=now.isoformat(),
         )
-        run_id = self.db.start_run("engage", now.isoformat())
+        run_id = self.db.start_run("build-queue", now.isoformat())
         self.db.finish_run(
             run_id,
             finished_at=now.isoformat(),
@@ -152,3 +152,35 @@ class DatabaseTests(unittest.TestCase):
 
         self.db.set_consecutive_comment_failures(2, now)
         self.assertEqual(self.db.get_consecutive_comment_failures(), 2)
+
+    def test_mark_posts_seen_tracks_unique_ids(self) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.db.mark_posts_seen(["one", "two", "one"], now)
+
+        self.assertTrue(self.db.has_seen("one"))
+        self.assertTrue(self.db.has_seen("two"))
+
+        row = self.db.conn.execute(
+            "SELECT COUNT(*) AS count FROM seen_posts",
+        ).fetchone()
+        self.assertEqual(int(row["count"]), 2)
+
+    def test_daily_failure_summary_truncates_each_error_entry(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_error = "A" * 130
+        second_error = "B" * 150
+
+        run_id = self.db.start_run("build-queue", now.isoformat())
+        self.db.finish_run(
+            run_id,
+            finished_at=now.isoformat(),
+            errors=f"{first_error} | {second_error}",
+        )
+
+        failure_count, failure_summary = self.db.get_daily_failure_summary("UTC", now=now)
+
+        self.assertEqual(failure_count, 2)
+        self.assertEqual(
+            failure_summary,
+            f"{first_error[:120]} | {second_error[:120]}",
+        )

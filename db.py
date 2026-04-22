@@ -9,6 +9,10 @@ from zoneinfo import ZoneInfo
 from models import DiscoveredPost
 
 
+DAILY_FAILURE_ERROR_LIMIT = 120
+ERROR_SEPARATOR = " | "
+
+
 class Database:
     def __init__(self, db_path: Path, logger: Any):
         self.db_path = db_path
@@ -206,6 +210,13 @@ class Database:
         ).fetchone()
         return row is not None
 
+    def has_seen(self, post_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM seen_posts WHERE post_id = ? LIMIT 1",
+            (post_id,),
+        ).fetchone()
+        return row is not None
+
     def mark_post_seen(self, post_id: str, seen_at: str) -> None:
         self.conn.execute(
             """
@@ -214,6 +225,20 @@ class Database:
             ON CONFLICT(post_id) DO NOTHING
             """,
             (post_id, seen_at),
+        )
+        self.conn.commit()
+
+    def mark_posts_seen(self, post_ids: list[str], seen_at: str) -> None:
+        unique_post_ids = list(dict.fromkeys(post_ids))
+        if not unique_post_ids:
+            return
+        self.conn.executemany(
+            """
+            INSERT INTO seen_posts(post_id, first_seen)
+            VALUES(?, ?)
+            ON CONFLICT(post_id) DO NOTHING
+            """,
+            [(post_id, seen_at) for post_id in unique_post_ids],
         )
         self.conn.commit()
 
@@ -481,7 +506,12 @@ class Database:
             if row["stop_reason"]:
                 failures.append(str(row["stop_reason"]))
             if row["errors"]:
-                failures.append(str(row["errors"]))
+                failures.extend(self._split_errors(str(row["errors"])))
 
-        summary = failures[0] if failures else None
-        return len(failures), summary
+        truncated_failures = [failure[:DAILY_FAILURE_ERROR_LIMIT] for failure in failures]
+        summary = ERROR_SEPARATOR.join(truncated_failures) if truncated_failures else None
+        return len(truncated_failures), summary
+
+    @staticmethod
+    def _split_errors(errors: str) -> list[str]:
+        return [part.strip() for part in errors.split(ERROR_SEPARATOR) if part.strip()]

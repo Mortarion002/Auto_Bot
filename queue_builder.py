@@ -64,8 +64,7 @@ class QueueBuilder:
         self._keyword_diagnostics = []
 
         posts_discovered: list[DiscoveredPost] = []
-        reply_drafts: list[dict[str, Any]] = []
-        post_ideas: list[dict[str, Any]] = []
+        x_findings: list[dict[str, Any]] = []
         reddit_leads: list[dict[str, Any]] = []
         queue_sent = False
         stop_reason: str | None = None
@@ -79,22 +78,25 @@ class QueueBuilder:
             )
 
             reddit_leads = self._run_reddit_scan()
-            reply_drafts = self._generate_drafts(posts_discovered, dry_run=dry_run)
-            post_ideas = self._generate_post_ideas(dry_run=dry_run)
+            x_findings = self._build_x_findings(posts_discovered, dry_run=dry_run)
 
             self._send_queue(
-                reply_drafts,
-                post_ideas,
+                x_findings,
                 reddit_leads,
                 dry_run=dry_run,
             )
             queue_sent = not dry_run
+            if not dry_run:
+                self.db.mark_posts_seen(
+                    [finding["post_id"] for finding in x_findings],
+                    self._timestamp(),
+                )
 
             self.logger.info(
-                "Queue build finished: %s posts discovered, %s reply drafts, %s post ideas, %s reddit leads.",
+                "Research digest finished: %s posts discovered, %s X findings, %s response suggestions, %s reddit leads.",
                 self._posts_discovered_count,
-                len(reply_drafts),
-                len(post_ideas),
+                len(x_findings),
+                self._count_response_suggestions(x_findings),
                 len(reddit_leads),
             )
             return 0
@@ -111,8 +113,8 @@ class QueueBuilder:
                     self.db.log_queue_run(
                         run_at=started_at,
                         posts_discovered=self._posts_discovered_count,
-                        drafts_generated=len(reply_drafts),
-                        post_ideas_generated=len(post_ideas),
+                        drafts_generated=self._count_response_suggestions(x_findings),
+                        post_ideas_generated=0,
                         reddit_leads=len(reddit_leads),
                         queue_sent=queue_sent,
                         errors=" | ".join(self._run_errors) if self._run_errors else None,
@@ -296,58 +298,53 @@ class QueueBuilder:
             self._run_errors.append(message)
             return []
 
-    def _generate_drafts(
+    def _build_x_findings(
         self,
         posts: list[DiscoveredPost],
         *,
         dry_run: bool,
     ) -> list[dict[str, Any]]:
-        drafts: list[dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
         limit = max(0, self.settings.queue_max_reply_drafts)
 
         for post in posts[:limit]:
-            if self.db.has_commented(post.post_id):
-                self.logger.info(
-                    "Skipping post %s because it already exists in commented_posts.",
-                    post.post_id,
-                )
-                continue
+            response_suggestion: str | None = None
 
             try:
                 draft = self.generator.generate_comment(post, dry_run=dry_run)
             except Exception as exc:
-                message = f"Reply draft generation failed for {post.post_id}: {exc}"
+                message = f"Response suggestion generation failed for {post.post_id}: {exc}"
                 self.logger.warning(message)
                 self._run_errors.append(message)
-                continue
+            else:
+                if draft.validation_errors:
+                    reason = "; ".join(draft.validation_errors)
+                    self.logger.warning(
+                        "Suggestion skipped for post %s because validation failed: %s",
+                        post.post_id,
+                        reason,
+                    )
+                else:
+                    draft_text = self._squash_whitespace(draft.text)
+                    if self._contains_getelvan_link(draft_text):
+                        self.logger.warning(
+                            "Suggestion skipped for post %s because it contains a getelvan.com link.",
+                            post.post_id,
+                        )
+                    else:
+                        if len(draft_text) > REPLY_DRAFT_LIMIT:
+                            self.logger.info(
+                                "Response suggestion %s is %s chars; keeping full validated text because it passed the 280-char validator.",
+                                post.post_id,
+                                len(draft_text),
+                            )
+                        response_suggestion = draft_text
 
-            if draft.validation_errors:
-                reason = "; ".join(draft.validation_errors)
-                self.logger.warning(
-                    "Skipping post %s because validation failed: %s",
-                    post.post_id,
-                    reason,
-                )
-                continue
-
-            draft_text = self._squash_whitespace(draft.text)
-            if self._contains_getelvan_link(draft_text):
-                self.logger.warning(
-                    "Skipping post %s because the reply draft contains a getelvan.com link.",
-                    post.post_id,
-                )
-                continue
-            if len(draft_text) > REPLY_DRAFT_LIMIT:
-                self.logger.info(
-                    "Reply draft %s is %s chars; keeping full validated text because it passed the 280-char validator.",
-                    post.post_id,
-                    len(draft_text),
-                )
-
-            drafts.append(
+            findings.append(
                 {
                     "post_id": post.post_id,
                     "author_handle": post.author_handle.lstrip("@"),
+                    "keyword": post.keyword,
                     "post_text_excerpt": self._truncate_text(
                         self._squash_whitespace(post.text),
                         X_EXCERPT_LIMIT,
@@ -355,109 +352,35 @@ class QueueBuilder:
                     "score": post.score,
                     "likes": post.likes,
                     "replies": post.replies,
-                    "draft_comment": draft_text,
+                    "response_suggestion": response_suggestion,
                     "post_url": post.post_url,
                 }
             )
 
-        return drafts
-
-    def _generate_post_ideas(self, *, dry_run: bool) -> list[dict[str, Any]]:
-        ideas: list[dict[str, Any]] = []
-        count = max(0, self.settings.queue_max_post_ideas)
-        topics = self.settings.topic_rotation
-        if not topics or count <= 0:
-            if not topics:
-                self.logger.warning("No topic rotation configured; skipping post ideas.")
-            return ideas
-
-        if dry_run:
-            cursor = self.db.get_int_state("topic_cursor", 0)
-            topic_entries = [
-                (
-                    topics[(cursor + offset) % len(topics)],
-                    cursor + offset + 1,
-                    (cursor + offset + 1) % 3 == 0,
-                )
-                for offset in range(count)
-            ]
-        else:
-            topic_entries = []
-            for _ in range(count):
-                topic_entries.append(
-                    self.db.get_next_topic(
-                        topics,
-                        updated_at=self._timestamp(),
-                        advance=True,
-                    )
-                )
-
-        for topic_category, generation_number, allow_elvan_reference in topic_entries:
-            try:
-                draft = self.generator.generate_standalone_post(
-                    topic_category,
-                    allow_elvan_reference=allow_elvan_reference,
-                    dry_run=dry_run,
-                )
-            except Exception as exc:
-                message = f"Standalone post generation failed for {topic_category}: {exc}"
-                self.logger.warning(message)
-                self._run_errors.append(message)
-                continue
-
-            if draft.validation_errors:
-                reason = "; ".join(draft.validation_errors)
-                self.logger.warning(
-                    "Skipping post idea %s because validation failed: %s",
-                    topic_category,
-                    reason,
-                )
-                continue
-
-            draft_text = self._squash_whitespace(draft.text)
-            if self._contains_getelvan_link(draft_text):
-                self.logger.warning(
-                    "Skipping post idea %s because it contains a getelvan.com link.",
-                    topic_category,
-                )
-                continue
-
-            ideas.append(
-                {
-                    "topic_category": topic_category,
-                    "generation_number": generation_number,
-                    "draft_post_text": draft_text,
-                }
-            )
-
-        return ideas
+        return findings
 
     def _send_queue(
         self,
-        reply_drafts: list[dict[str, Any]],
-        post_ideas: list[dict[str, Any]],
+        x_findings: list[dict[str, Any]],
         reddit_leads: list[dict[str, Any]],
         *,
         dry_run: bool,
     ) -> None:
         messages: list[str] = [
-            self._build_header_message(len(reply_drafts), len(post_ideas)),
+            self._build_header_message(x_findings, reddit_leads),
         ]
 
         if self._posts_discovered_count == 0:
-            messages.append("No X posts found today. Try again tomorrow.")
+            messages.append("No X conversations met the current filter today.")
 
-        for index, draft in enumerate(reply_drafts, start=1):
+        for index, finding in enumerate(x_findings, start=1):
             messages.append(
-                self._format_reply_message(
+                self._format_x_finding_message(
                     index=index,
-                    total=len(reply_drafts),
-                    draft=draft,
+                    total=len(x_findings),
+                    finding=finding,
                 )
             )
-
-        if post_ideas:
-            messages.append(self._format_post_ideas_message(post_ideas))
 
         reddit_message = self._format_reddit_leads_message(reddit_leads)
         if reddit_message is not None:
@@ -476,7 +399,7 @@ class QueueBuilder:
         if not self.notifier.send_alert(message):
             raise RuntimeError("Failed to send queue message to Telegram.")
 
-    def _build_header_message(self, reply_count: int, post_idea_count: int) -> str:
+    def _legacy_build_header_message(self, reply_count: int, post_idea_count: int) -> str:
         now = datetime.now(self.settings.zoneinfo())
         lines = [
             f"🎯 Elvan X Queue — {now.strftime('%B %d, %Y')}",
@@ -495,7 +418,7 @@ class QueueBuilder:
         )
         return "\n".join(lines)
 
-    def _format_reply_message(self, *, index: int, total: int, draft: dict[str, Any]) -> str:
+    def _legacy_format_reply_message(self, *, index: int, total: int, draft: dict[str, Any]) -> str:
         return (
             f"━━━ REPLY {index} of {total} ━━━\n"
             f"👤 @{draft['author_handle']}\n"
@@ -506,7 +429,7 @@ class QueueBuilder:
             f"🔗 {draft['post_url']}"
         )
 
-    def _format_post_ideas_message(self, post_ideas: list[dict[str, Any]]) -> str:
+    def _legacy_format_post_ideas_message(self, post_ideas: list[dict[str, Any]]) -> str:
         lines = ["━━━ POST IDEAS FOR TODAY ━━━", ""]
         for index, idea in enumerate(post_ideas, start=1):
             lines.extend(
@@ -519,7 +442,7 @@ class QueueBuilder:
         lines.append("Post any of these manually on X today.")
         return "\n".join(lines)
 
-    def _format_reddit_leads_message(self, reddit_leads: list[dict[str, Any]]) -> str | None:
+    def _legacy_format_reddit_leads_message(self, reddit_leads: list[dict[str, Any]]) -> str | None:
         if not reddit_leads:
             return None
 
@@ -550,19 +473,126 @@ class QueueBuilder:
         lines.append("Consider replying manually on Reddit to high priority leads.")
         return "\n".join(lines)
 
-    def _format_reddit_lead_lines(self, lead: dict[str, Any]) -> list[str]:
+    def _legacy_format_reddit_lead_lines(self, lead: dict[str, Any]) -> list[str]:
         return [
             f"• r/{lead['subreddit']} — \"{lead['post_title']}\"",
             f"  {lead['upvotes']} upvotes | {lead['comments']} comments",
             f"  🔗 {lead['url']}",
         ]
 
-    def _build_footer_message(self) -> str:
+    def _legacy_build_footer_message(self) -> str:
         now = datetime.now(self.settings.zoneinfo())
         return (
             f"✅ Queue complete — {now.strftime('%B %d, %Y')}\n"
             "📊 Next stats report: 22:05"
         )
+
+    def _build_header_message(
+        self,
+        x_findings: list[dict[str, Any]],
+        reddit_leads: list[dict[str, Any]],
+    ) -> str:
+        now = datetime.now(self.settings.zoneinfo())
+        suggestion_count = self._count_response_suggestions(x_findings)
+        lines = [
+            f"Elvan Social Research Digest - {now.strftime('%B %d, %Y')}",
+            (
+                f"X findings: {len(x_findings)} surfaced"
+                f" | response suggestions: {suggestion_count}"
+                f" | Reddit leads: {len(reddit_leads)}"
+            ),
+            f"Generated at {now.strftime('%H:%M')}",
+        ]
+        if self._discovery_summary:
+            lines.append(f"Note: {self._discovery_summary}")
+        lines.extend(
+            [
+                "",
+                "Top X conversations and Reddit leads are below.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _format_x_finding_message(
+        self,
+        *,
+        index: int,
+        total: int,
+        finding: dict[str, Any],
+    ) -> str:
+        lines = [
+            f"X FINDING {index} of {total}",
+            f"@{finding['author_handle']}",
+            f"Matched keyword: {finding['keyword']}",
+            f"\"{finding['post_text_excerpt']}\"",
+            (
+                f"Score: {self._format_score(finding['score'])}"
+                f" | Likes: {finding['likes']}"
+                f" | Replies: {finding['replies']}"
+            ),
+        ]
+        if finding["response_suggestion"]:
+            lines.extend(
+                [
+                    "",
+                    "Suggested response angle:",
+                    f"\"{finding['response_suggestion']}\"",
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                f"Link: {finding['post_url']}",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _format_reddit_leads_message(self, reddit_leads: list[dict[str, Any]]) -> str | None:
+        if not reddit_leads:
+            return None
+
+        high_priority = [
+            lead for lead in reddit_leads if lead["priority"] == "high"
+        ][:REDDIT_HIGH_PRIORITY_LIMIT]
+        worth_reading = [
+            lead for lead in reddit_leads if lead["priority"] == "medium"
+        ][:REDDIT_WORTH_READING_LIMIT]
+
+        if not high_priority and not worth_reading:
+            return None
+
+        lines = ["REDDIT LEADS TODAY", ""]
+        if high_priority:
+            lines.append(f"High Priority ({len(high_priority)})")
+            for lead in high_priority:
+                lines.extend(self._format_reddit_lead_lines(lead))
+
+        if worth_reading:
+            if high_priority:
+                lines.append("")
+            lines.append(f"Worth Reading ({len(worth_reading)})")
+            for lead in worth_reading:
+                lines.extend(self._format_reddit_lead_lines(lead))
+
+        return "\n".join(lines)
+
+    def _format_reddit_lead_lines(self, lead: dict[str, Any]) -> list[str]:
+        return [
+            f"- r/{lead['subreddit']} - \"{lead['post_title']}\"",
+            f"  {lead['upvotes']} upvotes | {lead['comments']} comments",
+            f"  Link: {lead['url']}",
+        ]
+
+    def _build_footer_message(self) -> str:
+        now = datetime.now(self.settings.zoneinfo())
+        return (
+            f"Research digest complete - {now.strftime('%B %d, %Y')}\n"
+            "Next stats report: 22:05"
+        )
+
+    @staticmethod
+    def _count_response_suggestions(x_findings: list[dict[str, Any]]) -> int:
+        return sum(1 for finding in x_findings if finding["response_suggestion"])
 
     def _reddit_lead_to_dict(self, lead: RedditLead) -> dict[str, Any]:
         return {
@@ -640,7 +670,7 @@ class QueueBuilder:
         return {
             "input_count": 0,
             "passed": 0,
-            "already_commented": 0,
+            "already_seen": 0,
             "own_post": 0,
             "too_old": 0,
             "low_likes": 0,
@@ -688,7 +718,7 @@ class QueueBuilder:
             "too_old": "too old",
             "low_likes": "low likes",
             "high_likes": "high likes",
-            "already_commented": "already commented",
+            "already_seen": "already shared",
             "own_post": "own post",
             "irrelevant": "irrelevant",
         }
@@ -698,7 +728,7 @@ class QueueBuilder:
                 ("too_old", stats.get("too_old", 0)),
                 ("low_likes", stats.get("low_likes", 0)),
                 ("high_likes", stats.get("high_likes", 0)),
-                ("already_commented", stats.get("already_commented", 0)),
+                ("already_seen", stats.get("already_seen", 0)),
                 ("own_post", stats.get("own_post", 0)),
                 ("irrelevant", stats.get("irrelevant", 0)),
             )

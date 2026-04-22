@@ -1,30 +1,29 @@
 # X_Post
 
-Automated social-intelligence and publishing system for Elvan.
+Analysis-first social research system for Elvan.
 
-This project combines X engagement, standalone post generation, Reddit monitoring, SQLite persistence, Telegram notifications, and scheduled execution on Windows.
+This project scans X and Reddit, ranks relevant conversations, generates optional response suggestions, stores run history in SQLite, and sends research digests through Telegram.
 
 ## What It Does
 
-- Finds relevant opportunities on X
-- Generates and validates replies and standalone posts
-- Tracks daily limits, run history, and failure state in SQLite
-- Sends Telegram alerts and summaries
-- Monitors Reddit for relevant leads
-- Runs on a scheduled cadence through Windows Task Scheduler
+- Finds relevant conversations on X
+- Surfaces notable Reddit leads
+- Generates optional response suggestions for X findings
+- Sends research digests and stats reports through Telegram
+- Tracks run history, seen items, and failures in SQLite
+- Runs on a schedule through Windows Task Scheduler
 
 ## Main Workflows
 
-### X engagement
+### X research
 
 The X agent can:
 
 - check browser health
 - search for relevant posts
-- generate replies with AI
-- publish standalone posts
-- send a daily report
-- send a richer stats report
+- rank and filter conversations
+- send an X research digest to Telegram
+- send a daily research stats summary
 
 ### Reddit monitoring
 
@@ -70,7 +69,7 @@ If Gemini comment generation fails, the draft section shows `[Generation failed 
 
 ## Entry Points
 
-- `orchestrator.py` for the X agent commands
+- `orchestrator.py` for X research commands
 - `reddit_monitor.py` for the Reddit digest flow
 - `register_elvan_tasks.ps1` for Windows scheduled task setup
 
@@ -79,21 +78,19 @@ If Gemini comment generation fails, the draft section shows `[Generation failed 
 Run the X orchestrator with one of these commands:
 
 - `health-check`
-- `engage`
-- `publish`
-- `daily-report`
+- `build-queue`
 - `stats-report`
 
 Example:
 
 ```powershell
-python orchestrator.py stats-report
+python orchestrator.py build-queue
 ```
 
 Dry run:
 
 ```powershell
-python orchestrator.py stats-report --dry-run
+python orchestrator.py build-queue --dry-run
 ```
 
 Run the Reddit monitor:
@@ -105,11 +102,11 @@ python reddit_monitor.py
 ## Project Structure
 
 - `config.py` loads environment-based settings
-- `db.py` stores X agent state in `agent.db`
+- `db.py` stores X research state in `agent.db`
 - `reddit_db.py` stores Reddit state in `reddit_monitor.db`
-- `ai.py` generates and validates content
+- `ai.py` generates and validates response suggestions
 - `searcher.py` discovers relevant X posts
-- `poster.py` handles reply and post publishing
+- `queue_builder.py` builds the X and Reddit Telegram digest
 - `notifier.py` sends Telegram messages
 - `logger.py` configures logging
 
@@ -133,21 +130,19 @@ The main SQLite files are:
 - `agent.db`
 - `reddit_monitor.db`
 
-These files store operational history, run logs, seen items, and daily counters.
+These files store operational history, seen items, run logs, and research summaries.
 
 `reddit_monitor.db` schema includes a `hot_lead_alerted` column (integer, default 0) in the `reddit_seen_posts` table. This flag is set to 1 after a hot lead Telegram alert is sent for that post, preventing duplicate alerts across runs.
 
 ## Scheduled Tasks
 
-`register_elvan_tasks.ps1` registers the Windows scheduled tasks for the X agent.
-
-It is intended to run the automation without manual intervention.
+`register_elvan_tasks.ps1` registers the research digest and Reddit monitor scheduled tasks.
 
 ## Development Notes
 
 - The project uses standard Python tooling and SQLite for persistence
-- Telegram messages are used for alerts and summaries
-- The codebase is designed to be stateful and repeatable rather than one-off
+- Telegram messages are used for digests, alerts, and summaries
+- X live posting and posting reports are disabled in analysis-only mode
 
 ## Author
 
