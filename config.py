@@ -59,6 +59,7 @@ class Settings:
     db_path: Path
     logs_dir: Path
     delivery_failures_dir: Path
+    neon_database_url: str | None = None
     account_handle: str = "@yourhandle"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
@@ -102,6 +103,7 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         db_path=root / "agent.db",
         logs_dir=root / "logs",
         delivery_failures_dir=root / "delivery_failures",
+        neon_database_url=os.getenv("NEON_DATABASE_URL"),
         account_handle=_env_str("ACCOUNT_HANDLE", "@yourhandle"),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         gemini_model=_env_str("GEMINI_MODEL", "gemini-2.5-flash"),

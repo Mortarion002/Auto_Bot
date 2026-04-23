@@ -11,6 +11,7 @@ from ai import AnthropicContentGenerator
 from config import Settings
 from db import Database
 from models import DiscoveredPost
+from neon_store import NeonStore
 from notifier import TelegramNotifier
 from reddit_scraper import DEFAULT_POSTS_PER_SUBREDDIT, RedditScraper
 from reddit_scorer import DIRECT_KEYWORDS, TARGET_SUBREDDITS, RedditLead, rank_posts
@@ -38,6 +39,7 @@ class QueueBuilder:
         self.notifier = notifier
         self.searcher = XSearcher(settings, db, logger)
         self.generator = AnthropicContentGenerator(settings, logger)
+        self.neon_store = NeonStore(settings, logger)
         self._run_errors: list[str] = []
         self._posts_discovered_count = 0
         self._searches_run_count = 0
@@ -116,6 +118,7 @@ class QueueBuilder:
             if dry_run:
                 self.generator.client = original_client
             if not dry_run and run_id is not None:
+                finished_at = self._timestamp()
                 try:
                     self.db.log_queue_run(
                         run_at=started_at,
@@ -129,12 +132,20 @@ class QueueBuilder:
                 finally:
                     self.db.finish_run(
                         run_id,
-                        finished_at=self._timestamp(),
+                        finished_at=finished_at,
                         posts_found=self._posts_discovered_count,
                         searches_run=self._searches_run_count,
                         stop_reason=stop_reason,
                         errors=" | ".join(self._run_errors) if self._run_errors else None,
                     )
+                self._sync_neon_parallel_channel(
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    x_findings=x_findings,
+                    reddit_leads=reddit_leads,
+                    queue_sent=queue_sent,
+                    stop_reason=stop_reason,
+                )
 
     def _collect_x_posts(self, *, dry_run: bool) -> list[DiscoveredPost]:
         selected_keywords = self._select_queue_keywords(dry_run=dry_run)
@@ -352,13 +363,17 @@ class QueueBuilder:
                     "post_id": post.post_id,
                     "author_handle": post.author_handle.lstrip("@"),
                     "keyword": post.keyword,
+                    "post_text": self._squash_whitespace(post.text),
                     "post_text_excerpt": self._truncate_text(
                         self._squash_whitespace(post.text),
                         X_EXCERPT_LIMIT,
                     ),
+                    "post_created_at": post.created_at.isoformat(),
                     "score": post.score,
                     "likes": post.likes,
                     "replies": post.replies,
+                    "reposts": post.reposts,
+                    "search_mode": post.search_mode,
                     "response_suggestion": response_suggestion,
                     "post_url": post.post_url,
                 }
@@ -540,20 +555,78 @@ class QueueBuilder:
             "Next stats report: 22:05"
         )
 
+    def _sync_neon_parallel_channel(
+        self,
+        *,
+        started_at: str,
+        finished_at: str,
+        x_findings: list[dict[str, Any]],
+        reddit_leads: list[dict[str, Any]],
+        queue_sent: bool,
+        stop_reason: str | None,
+    ) -> None:
+        if not self.neon_store.enabled:
+            return
+
+        status = "success" if queue_sent and not stop_reason else "failed"
+        try:
+            x_count = self.neon_store.record_x_findings(
+                x_findings,
+                observed_at=started_at,
+                workflow="build-queue",
+            )
+            reddit_count = self.neon_store.record_reddit_leads(
+                reddit_leads,
+                observed_at=started_at,
+                workflow="build-queue",
+                source_system="x_post",
+            )
+            self.neon_store.record_workflow_run(
+                source_system="x_post",
+                workflow="build-queue",
+                started_at=started_at,
+                finished_at=finished_at,
+                status=status,
+                posts_discovered=self._posts_discovered_count,
+                drafts_generated=self._count_response_suggestions(x_findings),
+                reddit_leads=len(reddit_leads),
+                queue_sent=queue_sent,
+                searches_run=self._searches_run_count,
+                stop_reason=stop_reason,
+                errors=" | ".join(self._run_errors) if self._run_errors else None,
+                metadata={
+                    "discovery_summary": self._discovery_summary,
+                    "keyword_diagnostics": self._keyword_diagnostics,
+                },
+            )
+            self.logger.info(
+                "Neon parallel channel synced for build-queue: %s X findings, %s Reddit leads.",
+                x_count,
+                reddit_count,
+            )
+        except Exception as exc:
+            self.logger.warning("Neon parallel sync failed for build-queue: %s", exc)
+
     @staticmethod
     def _count_response_suggestions(x_findings: list[dict[str, Any]]) -> int:
         return sum(1 for finding in x_findings if finding["response_suggestion"])
 
     def _reddit_lead_to_dict(self, lead: RedditLead) -> dict[str, Any]:
         return {
+            "post_id": lead.post.post_id,
             "subreddit": lead.post.subreddit,
+            "author": lead.post.author,
             "post_title": lead.post.title,
+            "post_body": lead.post.body,
             "upvotes": lead.post.upvotes,
             "comments": lead.post.comment_count,
             "url": lead.post.post_url,
+            "created_at": lead.post.created_at.isoformat(),
             "priority": lead.priority,
             "score": lead.score,
             "primary_keyword": lead.primary_keyword,
+            "matched_keywords": list(lead.matched_keywords),
+            "keyword_intent": lead.keyword_intent,
         }
 
     def _dedupe_reddit_posts(self, posts: list[Any]) -> list[Any]:

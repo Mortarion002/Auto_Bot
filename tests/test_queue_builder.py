@@ -34,6 +34,19 @@ class FailingNotifier:
         return path
 
 
+class FailingNeonStore:
+    enabled = True
+
+    def record_x_findings(self, *args, **kwargs):
+        raise RuntimeError("neon unavailable")
+
+    def record_reddit_leads(self, *args, **kwargs):
+        return 0
+
+    def record_workflow_run(self, *args, **kwargs):
+        return False
+
+
 class QueueBuilderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -166,6 +179,50 @@ class QueueBuilderTests(unittest.TestCase):
         self.assertFalse(self.db.has_seen(post.post_id))
         archived_files = list(self.base_dir.glob("queue-*.txt"))
         self.assertTrue(archived_files)
+
+    def test_run_ignores_neon_parallel_failures(self) -> None:
+        self.builder.neon_store = FailingNeonStore()
+        now = datetime.now(timezone.utc)
+        post = DiscoveredPost(
+            post_id="post-neon-fail",
+            post_url="https://x.com/test/status/post-neon-fail",
+            author_handle="@founder",
+            text="Need a Delighted alternative with better onboarding feedback.",
+            likes=22,
+            replies=3,
+            reposts=1,
+            created_at=now,
+            keyword="Delighted alternative",
+            search_mode="live",
+            score=38.0,
+        )
+        finding = {
+            "post_id": post.post_id,
+            "author_handle": "founder",
+            "keyword": post.keyword,
+            "post_text": post.text,
+            "post_text_excerpt": post.text,
+            "post_created_at": post.created_at.isoformat(),
+            "score": post.score,
+            "likes": post.likes,
+            "replies": post.replies,
+            "reposts": post.reposts,
+            "search_mode": post.search_mode,
+            "response_suggestion": "Teams usually switch when onboarding feedback gets trapped in a survey silo.",
+            "post_url": post.post_url,
+        }
+
+        with mock.patch.object(self.builder, "_collect_x_posts", return_value=[post]), mock.patch.object(
+            self.builder, "_run_reddit_scan", return_value=[]
+        ), mock.patch.object(
+            self.builder, "_build_x_findings", return_value=[finding]
+        ), mock.patch.object(
+            self.builder, "_send_queue", return_value=True
+        ):
+            result = self.builder.run(dry_run=False)
+
+        self.assertEqual(result, 0)
+        self.assertTrue(self.db.has_seen(post.post_id))
 
 
 if __name__ == "__main__":

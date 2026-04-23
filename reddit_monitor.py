@@ -8,6 +8,7 @@ from typing import Any
 
 from config import Settings, load_settings
 from logger import setup_logger
+from neon_store import NeonStore
 from notifier import TelegramNotifier
 from reddit_db import RedditDatabase
 from reddit_scraper import DEFAULT_POSTS_PER_SUBREDDIT, RedditPost, RedditScraper
@@ -226,6 +227,36 @@ def _dedupe_posts(posts: list[RedditPost]) -> list[RedditPost]:
     return list(unique_posts.values())
 
 
+def _lead_to_parallel_signal(
+    lead: RedditLead,
+    *,
+    boosted_score: float,
+    is_hot_lead: bool,
+    hot_lead_alerted: bool,
+    draft_reply: str | None,
+) -> dict[str, Any]:
+    return {
+        "post_id": lead.post.post_id,
+        "subreddit": lead.post.subreddit,
+        "author": lead.post.author,
+        "post_title": lead.post.title,
+        "post_body": lead.post.body,
+        "upvotes": lead.post.upvotes,
+        "comments": lead.post.comment_count,
+        "url": lead.post.post_url,
+        "created_at": lead.post.created_at.isoformat(),
+        "priority": lead.priority,
+        "score": lead.score,
+        "boosted_score": boosted_score,
+        "primary_keyword": lead.primary_keyword,
+        "matched_keywords": list(lead.matched_keywords),
+        "keyword_intent": lead.keyword_intent,
+        "hot_lead": is_hot_lead,
+        "hot_lead_alerted": hot_lead_alerted,
+        "draft_reply": draft_reply,
+    }
+
+
 def _send_preserved_message(
     notifier: TelegramNotifier,
     logger: Any,
@@ -254,6 +285,7 @@ def run_monitor(
 ) -> int:
     db_path = settings.base_dir / REDDIT_DB_FILENAME
     db = RedditDatabase(db_path, logger)
+    neon_store = NeonStore(settings, logger)
     started_at = current_timestamp(settings)
     run_id = db.start_run(started_at)
 
@@ -263,7 +295,14 @@ def run_monitor(
     high_priority_count = 0
     digest_sent = False
     hot_lead_alerts_sent = 0
+    status = "success"
+    stop_reason: str | None = None
     errors: list[str] = []
+    surfaced_leads: list[RedditLead] = []
+    boosted_scores: dict[str, float] = {}
+    hot_lead_post_ids: set[str] = set()
+    hot_lead_alerted_post_ids: set[str] = set()
+    draft_comments: dict[str, str] = {}
 
     try:
         scraper = RedditScraper(settings, logger)
@@ -291,11 +330,11 @@ def run_monitor(
         matched_count = len(ranked_leads)
 
         # Apply conversion intent boosts and identify hot leads
-        boosted_scores: dict[str, float] = {
+        boosted_scores = {
             lead.post.post_id: _apply_conversion_intent_boost(lead)
             for lead in ranked_leads
         }
-        hot_lead_post_ids: set[str] = {
+        hot_lead_post_ids = {
             post_id
             for post_id, score in boosted_scores.items()
             if score >= HOT_LEAD_THRESHOLD
@@ -339,6 +378,9 @@ def run_monitor(
                         lead.post.post_id,
                         exc,
                     )
+                else:
+                    if comment:
+                        draft_comments[lead.post.post_id] = comment
                 alert_msg = _build_hot_lead_alert(
                     lead, boosted_scores[lead.post.post_id], comment
                 )
@@ -352,6 +394,7 @@ def run_monitor(
                 if sent:
                     hot_lead_alerts_sent += 1
                     db.mark_hot_lead_alerted(lead.post.post_id)
+                    hot_lead_alerted_post_ids.add(lead.post.post_id)
 
             digest_sent = _send_preserved_message(
                 notifier,
@@ -361,18 +404,23 @@ def run_monitor(
                 errors=errors,
             )
             if not digest_sent:
+                status = "failed"
+                stop_reason = "Failed to send reddit-digest Telegram message."
                 return 1
 
         logger.info("Hot lead alerts sent: %d", hot_lead_alerts_sent)
         return 0
     except Exception as exc:
+        status = "failed"
+        stop_reason = str(exc)
         errors.append(str(exc))
         logger.exception("Reddit monitor run failed.")
         return 1
     finally:
+        finished_at = current_timestamp(settings)
         db.finish_run(
             run_id,
-            finished_at=current_timestamp(settings),
+            finished_at=finished_at,
             posts_scanned=scanned_count,
             matches_found=matched_count,
             new_matches=new_count,
@@ -381,6 +429,49 @@ def run_monitor(
             errors=" | ".join(errors) if errors else None,
         )
         db.close()
+        if not dry_run and neon_store.enabled:
+            try:
+                neon_signals = [
+                    _lead_to_parallel_signal(
+                        lead,
+                        boosted_score=boosted_scores.get(lead.post.post_id, lead.score),
+                        is_hot_lead=lead.post.post_id in hot_lead_post_ids,
+                        hot_lead_alerted=lead.post.post_id in hot_lead_alerted_post_ids,
+                        draft_reply=draft_comments.get(lead.post.post_id),
+                    )
+                    for lead in surfaced_leads
+                ]
+                lead_count = neon_store.record_reddit_leads(
+                    neon_signals,
+                    observed_at=started_at,
+                    workflow="reddit-monitor",
+                    source_system="reddit_monitor",
+                )
+                neon_store.record_workflow_run(
+                    source_system="x_post",
+                    workflow="reddit-monitor",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    status=status,
+                    posts_scanned=scanned_count,
+                    matches_found=matched_count,
+                    new_matches=new_count,
+                    high_priority_count=high_priority_count,
+                    digest_sent=digest_sent,
+                    hot_lead_alerts_sent=hot_lead_alerts_sent,
+                    stop_reason=stop_reason,
+                    errors=" | ".join(errors) if errors else None,
+                    metadata={
+                        "hot_lead_post_ids": sorted(hot_lead_post_ids),
+                        "alerted_hot_lead_post_ids": sorted(hot_lead_alerted_post_ids),
+                    },
+                )
+                logger.info(
+                    "Neon parallel channel synced for reddit-monitor: %s surfaced leads.",
+                    lead_count,
+                )
+            except Exception as exc:
+                logger.warning("Neon parallel sync failed for reddit-monitor: %s", exc)
 
 
 def main(argv: list[str] | None = None) -> int:

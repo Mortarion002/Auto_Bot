@@ -4,3 +4,4 @@ undetected-chromedriver
 python-dotenv
 requests
 loguru
+psycopg[binary]

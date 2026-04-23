@@ -3,6 +3,7 @@
 Analysis-first social research system for Elvan.
 
 This project scans X and Reddit, ranks relevant conversations, generates optional response suggestions, stores run history in SQLite, and sends research digests through Telegram.
+It can also mirror findings and run summaries into Neon Postgres as a parallel analytics channel without replacing SQLite.
 
 ## What It Does
 
@@ -106,6 +107,7 @@ python reddit_monitor.py
 - `db.py` stores X research state in `agent.db`
 - `reddit_db.py` stores Reddit state in `reddit_monitor.db`
 - `ai.py` generates and validates response suggestions
+- `neon_store.py` mirrors findings and workflow runs into Neon when configured
 - `searcher.py` discovers relevant X posts
 - `queue_builder.py` builds the X and Reddit Telegram digest
 - `notifier.py` sends Telegram messages
@@ -123,6 +125,7 @@ Common values include:
 - `X_USERNAME`
 - `X_PASSWORD`
 - `GEMINI_API_KEY`
+- `NEON_DATABASE_URL`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TIMEZONE`
@@ -139,6 +142,11 @@ Failed Telegram deliveries are preserved as timestamped text files in:
 - `delivery_failures/`
 
 These files store operational history, seen items, run logs, and research summaries.
+
+If `NEON_DATABASE_URL` is set, the bot also writes parallel copies of surfaced findings and workflow runs into Neon tables:
+
+- `signal_events`
+- `workflow_runs`
 
 `agent.db` also retains `commented_posts` and `standalone_posts` as archive-only tables from the older posting workflow. They are kept for history, not as part of the active research-bot flow.
 
