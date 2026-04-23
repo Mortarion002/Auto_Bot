@@ -28,6 +28,7 @@ class Database:
     def _initialize(self) -> None:
         self.conn.executescript(
             """
+            -- Archive-only legacy posting history retained for historical records.
             CREATE TABLE IF NOT EXISTS commented_posts (
               post_id TEXT PRIMARY KEY,
               post_url TEXT,
@@ -42,6 +43,7 @@ class Database:
               status_reason TEXT
             );
 
+            -- Archive-only legacy standalone publishing history.
             CREATE TABLE IF NOT EXISTS standalone_posts (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               post_text TEXT,
@@ -56,6 +58,8 @@ class Database:
               first_seen TEXT
             );
 
+            -- comments_posted and standalone_posted are legacy posting-era counters
+            -- retained only so historical run rows continue to load correctly.
             CREATE TABLE IF NOT EXISTS run_log (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               run_type TEXT,
@@ -76,6 +80,8 @@ class Database:
               updated_at TEXT
             );
 
+            -- post_ideas_generated is a legacy publishing-era field retained so
+            -- older queue rows remain queryable without a destructive migration.
             CREATE TABLE IF NOT EXISTS queue_runs (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               run_at TEXT,
@@ -119,7 +125,7 @@ class Database:
         run_at: str,
         posts_discovered: int = 0,
         drafts_generated: int = 0,
-        post_ideas_generated: int = 0,
+        legacy_post_ideas_generated: int = 0,
         reddit_leads: int = 0,
         queue_sent: bool = False,
         errors: str | None = None,
@@ -135,7 +141,7 @@ class Database:
                 run_at,
                 posts_discovered,
                 drafts_generated,
-                post_ideas_generated,
+                legacy_post_ideas_generated,
                 reddit_leads,
                 int(queue_sent),
                 errors,
@@ -172,8 +178,8 @@ class Database:
         *,
         finished_at: str,
         posts_found: int = 0,
-        comments_posted: int = 0,
-        standalone_posted: int = 0,
+        legacy_comments_posted: int = 0,
+        legacy_standalone_posted: int = 0,
         searches_run: int = 0,
         stop_reason: str | None = None,
         errors: str | None = None,
@@ -193,8 +199,8 @@ class Database:
             (
                 finished_at,
                 posts_found,
-                comments_posted,
-                standalone_posted,
+                legacy_comments_posted,
+                legacy_standalone_posted,
                 searches_run,
                 stop_reason,
                 errors,
@@ -203,12 +209,16 @@ class Database:
         )
         self.conn.commit()
 
-    def has_commented(self, post_id: str) -> bool:
+    def has_legacy_comment_record(self, post_id: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM commented_posts WHERE post_id = ? LIMIT 1",
             (post_id,),
         ).fetchone()
         return row is not None
+
+    # Compatibility wrapper for older call sites that still use posting-era names.
+    def has_commented(self, post_id: str) -> bool:
+        return self.has_legacy_comment_record(post_id)
 
     def has_seen(self, post_id: str) -> bool:
         row = self.conn.execute(
@@ -242,7 +252,7 @@ class Database:
         )
         self.conn.commit()
 
-    def log_comment(
+    def archive_legacy_comment_activity(
         self,
         post: DiscoveredPost,
         comment_text: str,
@@ -285,7 +295,25 @@ class Database:
         )
         self.conn.commit()
 
-    def log_standalone_post(
+    # Compatibility wrapper for older call sites that still use posting-era names.
+    def log_comment(
+        self,
+        post: DiscoveredPost,
+        comment_text: str,
+        *,
+        status: str,
+        status_reason: str,
+        commented_at: str | None,
+    ) -> None:
+        self.archive_legacy_comment_activity(
+            post,
+            comment_text,
+            status=status,
+            status_reason=status_reason,
+            commented_at=commented_at,
+        )
+
+    def archive_legacy_standalone_post_activity(
         self,
         post_text: str,
         topic_category: str,
@@ -303,6 +331,24 @@ class Database:
             (post_text, topic_category, posted_at, status, status_reason),
         )
         self.conn.commit()
+
+    # Compatibility wrapper for older call sites that still use posting-era names.
+    def log_standalone_post(
+        self,
+        post_text: str,
+        topic_category: str,
+        *,
+        status: str,
+        status_reason: str,
+        posted_at: str | None,
+    ) -> None:
+        self.archive_legacy_standalone_post_activity(
+            post_text,
+            topic_category,
+            status=status,
+            status_reason=status_reason,
+            posted_at=posted_at,
+        )
 
     def get_state(self, key: str, default: str | None = None) -> str | None:
         row = self.conn.execute(
@@ -368,7 +414,58 @@ class Database:
         end_local = start_local + timedelta(days=1)
         return start_local.isoformat(), end_local.isoformat(), local_now.date().isoformat()
 
-    def get_daily_activity_counts(
+    def get_daily_research_activity_counts(
+        self,
+        timezone_name: str,
+        now: datetime | None = None,
+    ) -> dict[str, int | str | None]:
+        start_at, end_at, day_key = self._day_bounds(timezone_name, now)
+
+        queue_row = self.conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(posts_discovered), 0) AS posts_discovered,
+              COALESCE(SUM(drafts_generated), 0) AS drafts_generated,
+              COUNT(*) AS digest_runs
+            FROM queue_runs
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
+            """,
+            (start_at, end_at),
+        ).fetchone()
+
+        searches_row = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(searches_run), 0) AS count
+            FROM run_log
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
+            """,
+            (start_at, end_at),
+        ).fetchone()
+
+        last_queue_row = self.conn.execute(
+            """
+            SELECT run_at
+            FROM queue_runs
+            WHERE julianday(run_at) >= julianday(?)
+              AND julianday(run_at) < julianday(?)
+            ORDER BY run_at DESC
+            LIMIT 1
+            """,
+            (start_at, end_at),
+        ).fetchone()
+
+        return {
+            "day_key": day_key,
+            "x_findings_surfaced": int(queue_row["posts_discovered"]),
+            "response_suggestions_generated": int(queue_row["drafts_generated"]),
+            "digest_runs": int(queue_row["digest_runs"]),
+            "searches_run": int(searches_row["count"]),
+            "latest_digest_run_at": str(last_queue_row["run_at"]) if last_queue_row else None,
+        }
+
+    def get_daily_legacy_publish_archive_counts(
         self,
         timezone_name: str,
         now: datetime | None = None,
@@ -399,72 +496,19 @@ class Database:
             (start_at, end_at),
         ).fetchone()
 
-        searches_row = self.conn.execute(
-            """
-            SELECT COALESCE(SUM(searches_run), 0) AS count
-            FROM run_log
-            WHERE julianday(run_at) >= julianday(?)
-              AND julianday(run_at) < julianday(?)
-            """,
-            (start_at, end_at),
-        ).fetchone()
-
         return {
             "day_key": day_key,
-            "comments_posted": int(comments_row["count"]),
-            "standalone_posted": int(posts_row["count"]),
-            "searches_run": int(searches_row["count"]),
+            "legacy_comments_posted": int(comments_row["count"]),
+            "legacy_standalone_posts_published": int(posts_row["count"]),
         }
 
-    def get_daily_failure_summary(
+    def get_daily_research_failure_summary(
         self,
         timezone_name: str,
         now: datetime | None = None,
     ) -> tuple[int, str | None]:
         start_at, end_at, _ = self._day_bounds(timezone_name, now)
         failures: list[str] = []
-
-        comment_rows = self.conn.execute(
-            """
-            SELECT post_id, status_reason
-            FROM commented_posts
-            WHERE status = 'failed'
-              AND commented_at IS NOT NULL
-              AND julianday(commented_at) >= julianday(?)
-              AND julianday(commented_at) < julianday(?)
-            ORDER BY commented_at DESC
-            LIMIT 5
-            """,
-            (start_at, end_at),
-        ).fetchall()
-        failures.extend(
-            [
-                f"comment {row['post_id']}: {row['status_reason']}"
-                for row in comment_rows
-                if row["status_reason"]
-            ]
-        )
-
-        standalone_rows = self.conn.execute(
-            """
-            SELECT topic_category, status_reason
-            FROM standalone_posts
-            WHERE status = 'failed'
-              AND posted_at IS NOT NULL
-              AND julianday(posted_at) >= julianday(?)
-              AND julianday(posted_at) < julianday(?)
-            ORDER BY posted_at DESC
-            LIMIT 5
-            """,
-            (start_at, end_at),
-        ).fetchall()
-        failures.extend(
-            [
-                f"post {row['topic_category']}: {row['status_reason']}"
-                for row in standalone_rows
-                if row["status_reason"]
-            ]
-        )
 
         run_rows = self.conn.execute(
             """
@@ -487,6 +531,92 @@ class Database:
         truncated_failures = [failure[:DAILY_FAILURE_ERROR_LIMIT] for failure in failures]
         summary = ERROR_SEPARATOR.join(truncated_failures) if truncated_failures else None
         return len(truncated_failures), summary
+
+    def get_daily_legacy_publish_failure_summary(
+        self,
+        timezone_name: str,
+        now: datetime | None = None,
+    ) -> tuple[int, str | None]:
+        start_at, end_at, _ = self._day_bounds(timezone_name, now)
+        failures: list[str] = []
+
+        comment_rows = self.conn.execute(
+            """
+            SELECT post_id, status_reason
+            FROM commented_posts
+            WHERE status = 'failed'
+              AND commented_at IS NOT NULL
+              AND julianday(commented_at) >= julianday(?)
+              AND julianday(commented_at) < julianday(?)
+            ORDER BY commented_at DESC
+            LIMIT 5
+            """,
+            (start_at, end_at),
+        ).fetchall()
+        failures.extend(
+            [
+                f"legacy comment {row['post_id']}: {row['status_reason']}"
+                for row in comment_rows
+                if row["status_reason"]
+            ]
+        )
+
+        standalone_rows = self.conn.execute(
+            """
+            SELECT topic_category, status_reason
+            FROM standalone_posts
+            WHERE status = 'failed'
+              AND posted_at IS NOT NULL
+              AND julianday(posted_at) >= julianday(?)
+              AND julianday(posted_at) < julianday(?)
+            ORDER BY posted_at DESC
+            LIMIT 5
+            """,
+            (start_at, end_at),
+        ).fetchall()
+        failures.extend(
+            [
+                f"legacy standalone post {row['topic_category']}: {row['status_reason']}"
+                for row in standalone_rows
+                if row["status_reason"]
+            ]
+        )
+
+        truncated_failures = [failure[:DAILY_FAILURE_ERROR_LIMIT] for failure in failures]
+        summary = ERROR_SEPARATOR.join(truncated_failures) if truncated_failures else None
+        return len(truncated_failures), summary
+
+    # Compatibility wrapper retained for any older reporting code still importing
+    # the pre-research naming. It now returns archive-only publishing counts.
+    def get_daily_activity_counts(
+        self,
+        timezone_name: str,
+        now: datetime | None = None,
+    ) -> dict[str, int | str]:
+        return self.get_daily_legacy_publish_archive_counts(timezone_name, now=now)
+
+    # Compatibility wrapper that combines research failures with any legacy
+    # publishing archive failures that still exist in historical data.
+    def get_daily_failure_summary(
+        self,
+        timezone_name: str,
+        now: datetime | None = None,
+    ) -> tuple[int, str | None]:
+        research_count, research_summary = self.get_daily_research_failure_summary(
+            timezone_name,
+            now=now,
+        )
+        legacy_count, legacy_summary = self.get_daily_legacy_publish_failure_summary(
+            timezone_name,
+            now=now,
+        )
+
+        parts = [part for part in (research_summary, legacy_summary) if part]
+        if not parts:
+            return 0, None
+
+        combined = ERROR_SEPARATOR.join(parts)
+        return research_count + legacy_count, combined
 
     @staticmethod
     def _split_errors(errors: str) -> list[str]:

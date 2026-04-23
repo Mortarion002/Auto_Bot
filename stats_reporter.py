@@ -38,8 +38,8 @@ class StatsReporter:
 
     def _build_message(self) -> str:
         now = datetime.now(self.settings.zoneinfo())
-        queue_today = self._get_queue_stats_today()
-        queue_week = self._get_queue_stats_week()
+        x_research_today = self._get_x_research_stats_today()
+        x_research_week = self._get_x_research_stats_week()
         reddit_today = self._get_reddit_stats_today()
         reddit_week = self._get_reddit_stats_week()
         next_run_day = now + timedelta(days=1)
@@ -54,10 +54,11 @@ class StatsReporter:
             "Elvan Research Stats",
             now.strftime("%B %d, %Y"),
             "",
-            "X RESEARCH",
-            f"Posts surfaced: {queue_today['posts_discovered']}",
-            f"Response suggestions generated: {queue_today['drafts_generated']}",
-            f"Latest digest run: {queue_today['queue_time']}",
+            "X DIGEST",
+            f"Findings surfaced: {x_research_today['x_findings_surfaced']}",
+            f"Response suggestions generated: {x_research_today['response_suggestions_generated']}",
+            f"Digest runs today: {x_research_today['digest_runs']}",
+            f"Latest digest run: {x_research_today['latest_digest_run_time']}",
             "",
             "REDDIT MONITOR",
             f"Posts scanned: {reddit_today['posts_scanned']}",
@@ -66,46 +67,27 @@ class StatsReporter:
             f"Worth reading: {reddit_today['worth_reading']}",
             "",
             "WEEK SUMMARY",
-            f"X posts surfaced: {queue_week['posts_discovered']}",
+            f"X findings surfaced: {x_research_week['x_findings_surfaced']}",
             f"Reddit leads found: {reddit_week['reddit_leads']}",
             "",
             f"Next run: {next_run.strftime('%B %d, %Y')} {self.settings.queue_run_time}",
         ]
         return "\n".join(lines)
 
-    def _get_queue_stats_today(self) -> dict[str, int | str]:
-        start_at, end_at, _ = self.db._day_bounds(self.settings.timezone)
-        row = self.db.conn.execute(
-            """
-            SELECT
-              COALESCE(SUM(posts_discovered), 0) AS posts_discovered,
-              COALESCE(SUM(drafts_generated), 0) AS drafts_generated
-            FROM queue_runs
-            WHERE julianday(run_at) >= julianday(?)
-              AND julianday(run_at) < julianday(?)
-            """,
-            (start_at, end_at),
-        ).fetchone()
-        last_row = self.db.conn.execute(
-            """
-            SELECT run_at
-            FROM queue_runs
-            WHERE julianday(run_at) >= julianday(?)
-              AND julianday(run_at) < julianday(?)
-            ORDER BY run_at DESC
-            LIMIT 1
-            """,
-            (start_at, end_at),
-        ).fetchone()
-
-        queue_time = self._format_clock_time(last_row["run_at"] if last_row else None)
+    def _get_x_research_stats_today(self) -> dict[str, int | str]:
+        summary = self.db.get_daily_research_activity_counts(self.settings.timezone)
         return {
-            "posts_discovered": int(row["posts_discovered"]),
-            "drafts_generated": int(row["drafts_generated"]),
-            "queue_time": queue_time,
+            "x_findings_surfaced": int(summary["x_findings_surfaced"]),
+            "response_suggestions_generated": int(summary["response_suggestions_generated"]),
+            "digest_runs": int(summary["digest_runs"]),
+            "latest_digest_run_time": self._format_clock_time(
+                summary["latest_digest_run_at"]
+                if isinstance(summary["latest_digest_run_at"], str)
+                else None
+            ),
         }
 
-    def _get_queue_stats_week(self) -> dict[str, int]:
+    def _get_x_research_stats_week(self) -> dict[str, int]:
         start_at, end_at = self._week_bounds()
         row = self.db.conn.execute(
             """
@@ -116,7 +98,7 @@ class StatsReporter:
             """,
             (start_at, end_at),
         ).fetchone()
-        return {"posts_discovered": int(row["count"])}
+        return {"x_findings_surfaced": int(row["count"])}
 
     def _get_reddit_stats_today(self) -> dict[str, int]:
         conn = self._open_reddit_connection()

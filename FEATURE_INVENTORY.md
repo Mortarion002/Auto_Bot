@@ -70,15 +70,18 @@ These paths belonged to the older posting workflow and were removed because they
 
 ## Historical Compatibility Still Present
 
-These pieces are still in the codebase because they hold old data or support reporting, but they are not part of the active research workflow.
+These pieces are still in the codebase because they hold old data or support compatibility, but they are not part of the active research workflow.
 
 - `commented_posts` table in `agent.db`
+  kept as an archive-only record of the older comment-posting workflow
 - `standalone_posts` table in `agent.db`
+  kept as an archive-only record of the older standalone-post workflow
 - `post_ideas_generated` column in `queue_runs`
+  retained as a legacy compatibility column; active research code treats it as archival only
 - disabled CLI commands in `orchestrator.py`: `engage`, `publish`, `daily-report`
 
 ## Suggested Next Cleanup Pass
 
-1. Rename or annotate historical database fields that no longer describe active behavior.
-2. Decide whether `commented_posts` and `standalone_posts` should remain as archival tables or move to a migration/export step.
-3. If the research workflow is stable, simplify queue/report wording so only active concepts appear in logs and summaries.
+1. Decide whether the archive-only posting tables should stay in `agent.db` long-term or move to a one-time export.
+2. Remove the remaining inert `_legacy_*` formatter helpers in `queue_builder.py`.
+3. If the research workflow stays stable, consider a future SQLite migration that renames legacy columns instead of only annotating them in code.

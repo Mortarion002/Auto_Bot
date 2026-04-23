@@ -74,7 +74,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(row["comment_text"], "Second draft")
         self.assertEqual(row["status"], "success")
 
-    def test_daily_counts_and_keyword_rotation_state(self) -> None:
+    def test_research_and_legacy_archive_counts_and_keyword_rotation_state(self) -> None:
         now = datetime.now(timezone.utc)
         post = DiscoveredPost(
             post_id="xyz789",
@@ -109,10 +109,27 @@ class DatabaseTests(unittest.TestCase):
             finished_at=now.isoformat(),
             searches_run=10,
         )
-        counts = self.db.get_daily_activity_counts("Asia/Calcutta", now=now)
-        self.assertEqual(counts["comments_posted"], 1)
-        self.assertEqual(counts["standalone_posted"], 1)
-        self.assertEqual(counts["searches_run"], 10)
+        self.db.log_queue_run(
+            run_at=now.isoformat(),
+            posts_discovered=4,
+            drafts_generated=2,
+            legacy_post_ideas_generated=0,
+            reddit_leads=1,
+            queue_sent=True,
+        )
+
+        research_counts = self.db.get_daily_research_activity_counts("Asia/Calcutta", now=now)
+        legacy_counts = self.db.get_daily_legacy_publish_archive_counts("Asia/Calcutta", now=now)
+        compatibility_counts = self.db.get_daily_activity_counts("Asia/Calcutta", now=now)
+
+        self.assertEqual(research_counts["x_findings_surfaced"], 4)
+        self.assertEqual(research_counts["response_suggestions_generated"], 2)
+        self.assertEqual(research_counts["digest_runs"], 1)
+        self.assertEqual(research_counts["searches_run"], 10)
+        self.assertIsNotNone(research_counts["latest_digest_run_at"])
+        self.assertEqual(legacy_counts["legacy_comments_posted"], 1)
+        self.assertEqual(legacy_counts["legacy_standalone_posts_published"], 1)
+        self.assertEqual(compatibility_counts, legacy_counts)
 
         keywords = self.db.get_rotating_keywords(
             ["one", "two", "three"],
@@ -141,7 +158,7 @@ class DatabaseTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(int(row["count"]), 2)
 
-    def test_daily_failure_summary_truncates_each_error_entry(self) -> None:
+    def test_research_failure_summary_truncates_each_error_entry(self) -> None:
         now = datetime.now(timezone.utc)
         first_error = "A" * 130
         second_error = "B" * 150
@@ -153,10 +170,41 @@ class DatabaseTests(unittest.TestCase):
             errors=f"{first_error} | {second_error}",
         )
 
-        failure_count, failure_summary = self.db.get_daily_failure_summary("UTC", now=now)
+        failure_count, failure_summary = self.db.get_daily_research_failure_summary("UTC", now=now)
 
         self.assertEqual(failure_count, 2)
         self.assertEqual(
             failure_summary,
             f"{first_error[:120]} | {second_error[:120]}",
         )
+
+    def test_legacy_publish_failure_summary_is_separate_from_research_failures(self) -> None:
+        now = datetime.now(timezone.utc)
+        post = DiscoveredPost(
+            post_id="legacy-failure",
+            post_url="https://x.com/test/status/legacy-failure",
+            author_handle="tester",
+            text="Legacy workflow failure example.",
+            likes=10,
+            replies=1,
+            reposts=0,
+            created_at=now,
+            keyword="NPS",
+            search_mode="live",
+            score=12.0,
+        )
+        self.db.log_comment(
+            post,
+            "Old comment",
+            status="failed",
+            status_reason="legacy timeout",
+            commented_at=now.isoformat(),
+        )
+
+        legacy_count, legacy_summary = self.db.get_daily_legacy_publish_failure_summary("UTC", now=now)
+        combined_count, combined_summary = self.db.get_daily_failure_summary("UTC", now=now)
+
+        self.assertEqual(legacy_count, 1)
+        self.assertIn("legacy comment legacy-failure: legacy timeout", legacy_summary)
+        self.assertEqual(combined_count, 1)
+        self.assertEqual(combined_summary, legacy_summary)

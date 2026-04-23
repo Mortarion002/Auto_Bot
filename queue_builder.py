@@ -121,7 +121,7 @@ class QueueBuilder:
                         run_at=started_at,
                         posts_discovered=self._posts_discovered_count,
                         drafts_generated=self._count_response_suggestions(x_findings),
-                        post_ideas_generated=0,
+                        legacy_post_ideas_generated=0,
                         reddit_leads=len(reddit_leads),
                         queue_sent=queue_sent,
                         errors=" | ".join(self._run_errors) if self._run_errors else None,

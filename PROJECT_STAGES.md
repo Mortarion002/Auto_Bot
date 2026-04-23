@@ -80,6 +80,7 @@ Risk level:
 
 Notes:
 - this is the safest place for cleanup and better observability
+- `commented_posts` and `standalone_posts` are now treated as archive-only legacy tables
 
 ## Recommended Cleanup Order
 

@@ -140,6 +140,8 @@ Failed Telegram deliveries are preserved as timestamped text files in:
 
 These files store operational history, seen items, run logs, and research summaries.
 
+`agent.db` also retains `commented_posts` and `standalone_posts` as archive-only tables from the older posting workflow. They are kept for history, not as part of the active research-bot flow.
+
 `reddit_monitor.db` schema includes a `hot_lead_alerted` column (integer, default 0) in the `reddit_seen_posts` table. This flag is set to 1 after a hot lead Telegram alert is sent for that post, preventing duplicate alerts across runs.
 
 ## Scheduled Tasks
