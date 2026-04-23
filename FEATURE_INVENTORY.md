@@ -83,5 +83,5 @@ These pieces are still in the codebase because they hold old data or support com
 ## Suggested Next Cleanup Pass
 
 1. Decide whether the archive-only posting tables should stay in `agent.db` long-term or move to a one-time export.
-2. Remove the remaining inert `_legacy_*` formatter helpers in `queue_builder.py`.
-3. If the research workflow stays stable, consider a future SQLite migration that renames legacy columns instead of only annotating them in code.
+2. If the research workflow stays stable, consider a future SQLite migration that renames legacy columns instead of only annotating them in code.
+3. Review whether historical compatibility wrappers in `db.py` should remain indefinitely or be removed in a later cleanup cycle.
