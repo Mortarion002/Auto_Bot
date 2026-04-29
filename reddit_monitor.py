@@ -346,7 +346,7 @@ def run_monitor(
         ]
 
         new_leads = [lead for lead in ranked_leads if not db.has_seen(lead.post.post_id)]
-        surfaced_leads = [lead for lead in new_leads if lead.priority != "low"]
+        surfaced_leads = [lead for lead in ranked_leads if lead.priority != "low"]
 
         new_count = len(new_leads)
         high_priority_count = len([lead for lead in surfaced_leads if lead.priority == "high"])

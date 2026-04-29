@@ -9,7 +9,7 @@ from pathlib import Path
 from config import load_settings
 from db import Database
 from models import DiscoveredPost
-from searcher import XSearcher, compute_engagement_score, parse_metric_count
+from searcher import XSearcher, compute_engagement_score, has_strong_relevance, parse_metric_count
 
 
 class SearcherHelperTests(unittest.TestCase):
@@ -117,3 +117,17 @@ class SearcherHelperTests(unittest.TestCase):
 
         self.assertEqual(filtered, [])
         self.assertEqual(stats["already_seen"], 1)
+
+    def test_strong_relevance_rejects_generic_direct_term_mentions(self) -> None:
+        self.assertFalse(
+            has_strong_relevance(
+                "Work should not come at the cost of mental health. 37% of workers report survey fatigue.",
+                "survey fatigue",
+            )
+        )
+        self.assertTrue(
+            has_strong_relevance(
+                "Looking for a Delighted alternative that handles B2B onboarding surveys.",
+                "Delighted alternative",
+            )
+        )

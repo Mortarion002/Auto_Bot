@@ -17,6 +17,40 @@ POST_URL_PATTERN = re.compile(
 )
 METRIC_PATTERN = re.compile(r"(\d+(?:[\d,.]*\d)?)([kmb]?)", re.IGNORECASE)
 KEYWORD_STOPWORDS = {"and", "for", "the", "with", "from", "into", "just", "rate"}
+INTENT_TERMS = {
+    "alternative",
+    "alternatives",
+    "replace",
+    "replacement",
+    "replacing",
+    "switch",
+    "switching",
+    "migrate",
+    "migrating",
+    "recommend",
+    "recommendation",
+    "recommendations",
+    "tool",
+    "tools",
+    "software",
+    "platform",
+    "platforms",
+}
+QUESTION_TERMS = {"looking", "need", "best", "anyone", "what", "which", "how"}
+BUSINESS_CONTEXT_TERMS = {
+    "b2b",
+    "customer",
+    "customers",
+    "churn",
+    "csat",
+    "feedback",
+    "nps",
+    "onboarding",
+    "product",
+    "saas",
+    "support",
+    "users",
+}
 ENGAGEMENT_LIKES_CAP = 120
 ENGAGEMENT_REPLIES_CAP = 80
 ENGAGEMENT_REPOSTS_CAP = 45.0
@@ -86,6 +120,28 @@ def compute_relevance_bonus(post_text: str, keyword: str) -> float:
         bonus += RELEVANCE_DIRECT_TERM_BONUS
 
     return bonus
+
+
+def has_strong_relevance(post_text: str, keyword: str) -> bool:
+    lowered = post_text.lower()
+    keyword_phrase = keyword.strip().lower()
+    keyword_terms = _keyword_terms(keyword)
+    text_terms = set(re.findall(r"[a-z0-9]+", lowered))
+    context_terms = INTENT_TERMS | QUESTION_TERMS | BUSINESS_CONTEXT_TERMS
+
+    if keyword_phrase and keyword_phrase in lowered:
+        if any(term in text_terms for term in DIRECT_NPS_TERMS):
+            return True
+        return bool(text_terms & context_terms)
+
+    matched_keyword_terms = [term for term in keyword_terms if term in text_terms]
+    if len(matched_keyword_terms) >= 2:
+        return True
+
+    if any(term in text_terms for term in DIRECT_NPS_TERMS):
+        return bool(text_terms & context_terms)
+
+    return False
 
 
 def extract_post_ref(href: str | None) -> tuple[str, str, str] | None:
@@ -298,11 +354,11 @@ class XSearcher:
                 stats["high_likes"] += 1
                 continue
 
-            relevance_bonus = compute_relevance_bonus(post.text, post.keyword)
-            if relevance_bonus <= 0:
+            if not has_strong_relevance(post.text, post.keyword):
                 stats["irrelevant"] += 1
                 continue
 
+            relevance_bonus = compute_relevance_bonus(post.text, post.keyword)
             post.score = compute_engagement_score(
                 post.likes,
                 post.replies,
