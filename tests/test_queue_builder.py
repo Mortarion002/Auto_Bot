@@ -47,6 +47,27 @@ class FailingNeonStore:
         return False
 
 
+class RecordingNeonStore:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.x_findings: list[dict] = []
+        self.reddit_calls = 0
+        self.workflow_runs: list[dict] = []
+
+    def record_x_findings(self, findings, *args, **kwargs):
+        self.x_findings.extend(findings)
+        return len(findings)
+
+    def record_reddit_leads(self, *args, **kwargs):
+        self.reddit_calls += 1
+        raise AssertionError("queue builder should not write reddit leads")
+
+    def record_workflow_run(self, *args, **kwargs):
+        self.workflow_runs.append(kwargs)
+        return True
+
+
 class QueueBuilderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -88,8 +109,6 @@ class QueueBuilderTests(unittest.TestCase):
         }
 
         with mock.patch.object(self.builder, "_collect_x_posts", return_value=[post]), mock.patch.object(
-            self.builder, "_run_reddit_scan", return_value=[]
-        ), mock.patch.object(
             self.builder, "_build_x_findings", return_value=[finding]
         ), mock.patch.object(
             self.builder, "_send_queue"
@@ -99,7 +118,7 @@ class QueueBuilderTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertTrue(self.db.has_seen(post.post_id))
 
-    def test_header_and_reddit_message_use_analysis_language(self) -> None:
+    def test_header_uses_x_only_language(self) -> None:
         x_findings = [
             {
                 "post_id": "post-1",
@@ -113,27 +132,14 @@ class QueueBuilderTests(unittest.TestCase):
                 "post_url": "https://x.com/test/status/post-1",
             }
         ]
-        reddit_leads = [
-            {
-                "subreddit": "SaaS",
-                "post_title": "Need a Delighted alternative",
-                "upvotes": 20,
-                "comments": 4,
-                "url": "https://reddit.com/example",
-                "priority": "high",
-                "score": 75.0,
-                "primary_keyword": "Delighted alternative",
-            }
-        ]
 
-        header = self.builder._build_header_message(x_findings, reddit_leads)
-        reddit_message = self.builder._format_reddit_leads_message(reddit_leads)
+        header = self.builder._build_header_message(x_findings)
 
         self.assertIn("Elvan Social Research Digest", header)
+        self.assertIn("X findings: 1 surfaced", header)
+        self.assertIn("Top X conversations are below.", header)
+        self.assertNotIn("Reddit leads", header)
         self.assertNotIn("post manually", header.lower())
-        assert reddit_message is not None
-        self.assertIn("REDDIT LEADS TODAY", reddit_message)
-        self.assertNotIn("replying manually", reddit_message.lower())
 
     def test_run_does_not_mark_seen_when_delivery_fails(self) -> None:
         self.builder = QueueBuilder(
@@ -169,8 +175,6 @@ class QueueBuilderTests(unittest.TestCase):
         }
 
         with mock.patch.object(self.builder, "_collect_x_posts", return_value=[post]), mock.patch.object(
-            self.builder, "_run_reddit_scan", return_value=[]
-        ), mock.patch.object(
             self.builder, "_build_x_findings", return_value=[finding]
         ):
             result = self.builder.run(dry_run=False)
@@ -213,8 +217,6 @@ class QueueBuilderTests(unittest.TestCase):
         }
 
         with mock.patch.object(self.builder, "_collect_x_posts", return_value=[post]), mock.patch.object(
-            self.builder, "_run_reddit_scan", return_value=[]
-        ), mock.patch.object(
             self.builder, "_build_x_findings", return_value=[finding]
         ), mock.patch.object(
             self.builder, "_send_queue", return_value=True
@@ -223,6 +225,38 @@ class QueueBuilderTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertTrue(self.db.has_seen(post.post_id))
+
+    def test_neon_sync_records_only_x_findings(self) -> None:
+        store = RecordingNeonStore()
+        self.builder.neon_store = store
+        now = datetime.now(timezone.utc)
+        finding = {
+            "post_id": "post-x-only",
+            "author_handle": "founder",
+            "keyword": "NPS",
+            "post_text": "Need a better NPS workflow.",
+            "post_text_excerpt": "Need a better NPS workflow.",
+            "post_created_at": now.isoformat(),
+            "score": 41.0,
+            "likes": 20,
+            "replies": 3,
+            "reposts": 1,
+            "search_mode": "live",
+            "response_suggestion": None,
+            "post_url": "https://x.com/test/status/post-x-only",
+        }
+
+        self.builder._sync_neon_parallel_channel(
+            started_at=now.isoformat(),
+            finished_at=now.isoformat(),
+            x_findings=[finding],
+            queue_sent=True,
+            stop_reason=None,
+        )
+
+        self.assertEqual(len(store.x_findings), 1)
+        self.assertEqual(store.reddit_calls, 0)
+        self.assertEqual(store.workflow_runs[0]["reddit_leads"], 0)
 
 
 if __name__ == "__main__":

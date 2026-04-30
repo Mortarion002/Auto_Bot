@@ -448,7 +448,7 @@ def run_monitor(
                     source_system="reddit_monitor",
                 )
                 neon_store.record_workflow_run(
-                    source_system="x_post",
+                    source_system="reddit_monitor",
                     workflow="reddit-monitor",
                     started_at=started_at,
                     finished_at=finished_at,

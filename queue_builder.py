@@ -13,16 +13,12 @@ from db import Database
 from models import DiscoveredPost
 from neon_store import NeonStore
 from notifier import TelegramNotifier
-from reddit_scraper import DEFAULT_POSTS_PER_SUBREDDIT, RedditScraper
-from reddit_scorer import DIRECT_KEYWORDS, TARGET_SUBREDDITS, RedditLead, rank_posts
 from searcher import XSearcher, compute_engagement_score, compute_relevance_bonus
 from session import BrowserSession
 
 
 X_EXCERPT_LIMIT = 100
 REPLY_DRAFT_LIMIT = 260
-REDDIT_HIGH_PRIORITY_LIMIT = 5
-REDDIT_WORTH_READING_LIMIT = 5
 
 
 class QueueBuilder:
@@ -67,7 +63,6 @@ class QueueBuilder:
 
         posts_discovered: list[DiscoveredPost] = []
         x_findings: list[dict[str, Any]] = []
-        reddit_leads: list[dict[str, Any]] = []
         queue_sent = False
         stop_reason: str | None = None
 
@@ -79,12 +74,10 @@ class QueueBuilder:
                 self._posts_discovered_count,
             )
 
-            reddit_leads = self._run_reddit_scan()
             x_findings = self._build_x_findings(posts_discovered, dry_run=dry_run)
 
             queue_sent = self._send_queue(
                 x_findings,
-                reddit_leads,
                 dry_run=dry_run,
             )
             if not dry_run:
@@ -102,11 +95,10 @@ class QueueBuilder:
                     return 1
 
             self.logger.info(
-                "Research digest finished: %s posts discovered, %s X findings, %s response suggestions, %s reddit leads.",
+                "Research digest finished: %s posts discovered, %s X findings, %s response suggestions.",
                 self._posts_discovered_count,
                 len(x_findings),
                 self._count_response_suggestions(x_findings),
-                len(reddit_leads),
             )
             return 0
         except Exception as exc:
@@ -125,7 +117,7 @@ class QueueBuilder:
                         posts_discovered=self._posts_discovered_count,
                         drafts_generated=self._count_response_suggestions(x_findings),
                         legacy_post_ideas_generated=0,
-                        reddit_leads=len(reddit_leads),
+                        reddit_leads=0,
                         queue_sent=queue_sent,
                         errors=" | ".join(self._run_errors) if self._run_errors else None,
                     )
@@ -142,7 +134,6 @@ class QueueBuilder:
                     started_at=started_at,
                     finished_at=finished_at,
                     x_findings=x_findings,
-                    reddit_leads=reddit_leads,
                     queue_sent=queue_sent,
                     stop_reason=stop_reason,
                 )
@@ -277,45 +268,6 @@ class QueueBuilder:
 
         return selected_keywords[:batch_size]
 
-    def _run_reddit_scan(self) -> list[dict[str, Any]]:
-        try:
-            scraper = RedditScraper(self.settings, self.logger)
-            scan_result = scraper.scan_subreddits(
-                TARGET_SUBREDDITS,
-                posts_per_subreddit=DEFAULT_POSTS_PER_SUBREDDIT,
-            )
-            if scan_result.errors:
-                self._run_errors.extend(scan_result.errors)
-
-            all_posts = self._dedupe_reddit_posts(scan_result.posts)
-            ranked_leads = rank_posts(all_posts)
-
-            if not ranked_leads:
-                self.logger.info(
-                    "No Reddit leads found in subreddit scan; running keyword fallback."
-                )
-                keyword_result = scraper.search_keywords(
-                    TARGET_SUBREDDITS,
-                    DIRECT_KEYWORDS,
-                )
-                if keyword_result.errors:
-                    self._run_errors.extend(keyword_result.errors)
-                all_posts = self._dedupe_reddit_posts(all_posts + keyword_result.posts)
-                ranked_leads = rank_posts(all_posts)
-
-            surfaced_leads = [
-                self._reddit_lead_to_dict(lead)
-                for lead in ranked_leads
-                if lead.priority in {"high", "medium"}
-            ]
-            self.logger.info("Reddit scan produced %s surfaced leads.", len(surfaced_leads))
-            return surfaced_leads
-        except Exception as exc:
-            message = f"Reddit scan failed: {exc}"
-            self.logger.warning(message)
-            self._run_errors.append(message)
-            return []
-
     def _build_x_findings(
         self,
         posts: list[DiscoveredPost],
@@ -384,12 +336,11 @@ class QueueBuilder:
     def _send_queue(
         self,
         x_findings: list[dict[str, Any]],
-        reddit_leads: list[dict[str, Any]],
         *,
         dry_run: bool,
     ) -> bool:
         messages: list[str] = [
-            self._build_header_message(x_findings, reddit_leads),
+            self._build_header_message(x_findings),
         ]
 
         if self._posts_discovered_count == 0:
@@ -403,10 +354,6 @@ class QueueBuilder:
                     finding=finding,
                 )
             )
-
-        reddit_message = self._format_reddit_leads_message(reddit_leads)
-        if reddit_message is not None:
-            messages.append(reddit_message)
 
         messages.append(self._build_footer_message())
 
@@ -444,8 +391,6 @@ class QueueBuilder:
         first_line = message.splitlines()[0].strip().lower() if message else ""
         if first_line.startswith("x finding"):
             return f"x-finding-{index}"
-        if first_line.startswith("reddit leads today"):
-            return f"reddit-leads-{index}"
         if first_line.startswith("research digest complete"):
             return f"footer-{index}"
         if first_line.startswith("elvan social research digest"):
@@ -455,7 +400,6 @@ class QueueBuilder:
     def _build_header_message(
         self,
         x_findings: list[dict[str, Any]],
-        reddit_leads: list[dict[str, Any]],
     ) -> str:
         now = datetime.now(self.settings.zoneinfo())
         suggestion_count = self._count_response_suggestions(x_findings)
@@ -464,7 +408,6 @@ class QueueBuilder:
             (
                 f"X findings: {len(x_findings)} surfaced"
                 f" | response suggestions: {suggestion_count}"
-                f" | Reddit leads: {len(reddit_leads)}"
             ),
             f"Generated at {now.strftime('%H:%M')}",
         ]
@@ -473,7 +416,7 @@ class QueueBuilder:
         lines.extend(
             [
                 "",
-                "Top X conversations and Reddit leads are below.",
+                "Top X conversations are below.",
             ]
         )
         return "\n".join(lines)
@@ -512,42 +455,6 @@ class QueueBuilder:
         )
         return "\n".join(lines)
 
-    def _format_reddit_leads_message(self, reddit_leads: list[dict[str, Any]]) -> str | None:
-        if not reddit_leads:
-            return None
-
-        high_priority = [
-            lead for lead in reddit_leads if lead["priority"] == "high"
-        ][:REDDIT_HIGH_PRIORITY_LIMIT]
-        worth_reading = [
-            lead for lead in reddit_leads if lead["priority"] == "medium"
-        ][:REDDIT_WORTH_READING_LIMIT]
-
-        if not high_priority and not worth_reading:
-            return None
-
-        lines = ["REDDIT LEADS TODAY", ""]
-        if high_priority:
-            lines.append(f"High Priority ({len(high_priority)})")
-            for lead in high_priority:
-                lines.extend(self._format_reddit_lead_lines(lead))
-
-        if worth_reading:
-            if high_priority:
-                lines.append("")
-            lines.append(f"Worth Reading ({len(worth_reading)})")
-            for lead in worth_reading:
-                lines.extend(self._format_reddit_lead_lines(lead))
-
-        return "\n".join(lines)
-
-    def _format_reddit_lead_lines(self, lead: dict[str, Any]) -> list[str]:
-        return [
-            f"- r/{lead['subreddit']} - \"{lead['post_title']}\"",
-            f"  {lead['upvotes']} upvotes | {lead['comments']} comments",
-            f"  Link: {lead['url']}",
-        ]
-
     def _build_footer_message(self) -> str:
         now = datetime.now(self.settings.zoneinfo())
         return (
@@ -561,7 +468,6 @@ class QueueBuilder:
         started_at: str,
         finished_at: str,
         x_findings: list[dict[str, Any]],
-        reddit_leads: list[dict[str, Any]],
         queue_sent: bool,
         stop_reason: str | None,
     ) -> None:
@@ -575,12 +481,6 @@ class QueueBuilder:
                 observed_at=started_at,
                 workflow="build-queue",
             )
-            reddit_count = self.neon_store.record_reddit_leads(
-                reddit_leads,
-                observed_at=started_at,
-                workflow="build-queue",
-                source_system="x_post",
-            )
             self.neon_store.record_workflow_run(
                 source_system="x_post",
                 workflow="build-queue",
@@ -589,7 +489,7 @@ class QueueBuilder:
                 status=status,
                 posts_discovered=self._posts_discovered_count,
                 drafts_generated=self._count_response_suggestions(x_findings),
-                reddit_leads=len(reddit_leads),
+                reddit_leads=0,
                 queue_sent=queue_sent,
                 searches_run=self._searches_run_count,
                 stop_reason=stop_reason,
@@ -600,9 +500,8 @@ class QueueBuilder:
                 },
             )
             self.logger.info(
-                "Neon parallel channel synced for build-queue: %s X findings, %s Reddit leads.",
+                "Neon parallel channel synced for build-queue: %s X findings.",
                 x_count,
-                reddit_count,
             )
         except Exception as exc:
             self.logger.warning("Neon parallel sync failed for build-queue: %s", exc)
@@ -610,30 +509,6 @@ class QueueBuilder:
     @staticmethod
     def _count_response_suggestions(x_findings: list[dict[str, Any]]) -> int:
         return sum(1 for finding in x_findings if finding["response_suggestion"])
-
-    def _reddit_lead_to_dict(self, lead: RedditLead) -> dict[str, Any]:
-        return {
-            "post_id": lead.post.post_id,
-            "subreddit": lead.post.subreddit,
-            "author": lead.post.author,
-            "post_title": lead.post.title,
-            "post_body": lead.post.body,
-            "upvotes": lead.post.upvotes,
-            "comments": lead.post.comment_count,
-            "url": lead.post.post_url,
-            "created_at": lead.post.created_at.isoformat(),
-            "priority": lead.priority,
-            "score": lead.score,
-            "primary_keyword": lead.primary_keyword,
-            "matched_keywords": list(lead.matched_keywords),
-            "keyword_intent": lead.keyword_intent,
-        }
-
-    def _dedupe_reddit_posts(self, posts: list[Any]) -> list[Any]:
-        unique_posts: dict[str, Any] = {}
-        for post in posts:
-            unique_posts.setdefault(post.post_id, post)
-        return list(unique_posts.values())
 
     @staticmethod
     def _squash_whitespace(text: str) -> str:
