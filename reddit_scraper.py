@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import html as html_module
+import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote_plus
 
 try:
     import requests
@@ -12,9 +16,8 @@ except ImportError:  # pragma: no cover - dependency may be missing in tests
 
 
 REDDIT_BASE_URL = "https://www.reddit.com"
-REDDIT_OAUTH_BASE_URL = "https://oauth.reddit.com"
-REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
 REDDIT_USER_AGENT = "script:ElvanRedditMonitor:1.0 (by /u/AmanKumar)"
+ATOM_NS = "http://www.w3.org/2005/Atom"
 DEFAULT_POSTS_PER_SUBREDDIT = 50
 DEFAULT_SEARCH_RESULTS_PER_KEYWORD = 10
 REQUEST_PAUSE_SECONDS = 0.25
@@ -48,51 +51,81 @@ class RedditScanResult:
     errors: list[str]
 
 
+def _extract_body_from_atom_content(raw_html: str) -> str:
+    """Pull plain text from the HTML blob inside an Atom <content> element."""
+    match = re.search(r"<!-- SC_OFF -->(.*?)<!-- SC_ON -->", raw_html, re.DOTALL)
+    if match:
+        inner = match.group(1)
+    else:
+        inner = raw_html
+    stripped = re.sub(r"<[^>]+>", " ", inner)
+    decoded = html_module.unescape(stripped)
+    return re.sub(r"\s+", " ", decoded).strip()
+
+
+def _parse_atom_entry(entry: ET.Element, subreddit: str) -> RedditPost | None:
+    """Parse a single Atom <entry> into a RedditPost, or None if malformed."""
+    raw_id = (entry.findtext(f"{{{ATOM_NS}}}id") or "").strip()
+    post_id = raw_id.removeprefix("t3_")
+    if not post_id:
+        return None
+
+    title = (entry.findtext(f"{{{ATOM_NS}}}title") or "").strip()
+    if not title:
+        return None
+
+    link_el = entry.find(f"{{{ATOM_NS}}}link")
+    post_url = (link_el.get("href", "") if link_el is not None else "").strip()
+    if not post_url:
+        return None
+
+    author_el = entry.find(f"{{{ATOM_NS}}}author/{{{ATOM_NS}}}name")
+    raw_author = (author_el.text or "").strip() if author_el is not None else ""
+    author = raw_author.lstrip("/u").lstrip("/").strip() or "[deleted]"
+
+    published_text = (entry.findtext(f"{{{ATOM_NS}}}published") or "").strip()
+    try:
+        created_at = datetime.fromisoformat(published_text)
+    except (ValueError, TypeError):
+        created_at = datetime.now(timezone.utc)
+
+    content_el = entry.find(f"{{{ATOM_NS}}}content")
+    body = _extract_body_from_atom_content(content_el.text or "") if content_el is not None else ""
+
+    return RedditPost(
+        post_id=post_id,
+        subreddit=subreddit,
+        title=title,
+        body=body,
+        author=author,
+        post_url=post_url,
+        created_at=created_at,
+        upvotes=0,
+        comment_count=0,
+    )
+
+
 class RedditScraper:
     def __init__(self, settings: Any, logger: Any):
         self.settings = settings
         self.logger = logger
         self.session = requests.Session() if requests is not None else None
-        self._access_token: str | None = None
-        self._token_expires_at: float = 0.0
 
-    def _get_auth_headers(self) -> dict[str, str]:
-        """Return request headers, fetching a fresh OAuth2 token when needed."""
-        client_id = getattr(self.settings, "reddit_client_id", None)
-        client_secret = getattr(self.settings, "reddit_client_secret", None)
+    def _get_headers(self) -> dict[str, str]:
+        return {"User-Agent": REDDIT_USER_AGENT}
 
-        if not client_id or not client_secret:
-            raise RuntimeError(
-                "Reddit OAuth credentials are required. "
-                "Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env. "
-                "Create a free 'script' app at https://www.reddit.com/prefs/apps/"
-            )
-
-        if self._access_token and time.time() < self._token_expires_at - 60:
-            return {
-                "Authorization": f"bearer {self._access_token}",
-                "User-Agent": REDDIT_USER_AGENT,
-            }
-
+    def _fetch_rss(self, url: str) -> list[ET.Element]:
+        """Fetch a Reddit Atom feed URL and return all <entry> elements."""
         if self.session is None:
             raise RuntimeError("requests is required for Reddit scraping.")
-
-        response = self.session.post(
-            REDDIT_TOKEN_URL,
-            auth=(client_id, client_secret),
-            data={"grant_type": "client_credentials"},
-            headers={"User-Agent": REDDIT_USER_AGENT},
+        response = self.session.get(
+            url,
+            headers=self._get_headers(),
             timeout=self.settings.request_timeout_seconds,
         )
         response.raise_for_status()
-        token_data = response.json()
-        self._access_token = token_data["access_token"]
-        self._token_expires_at = time.time() + token_data.get("expires_in", 3600)
-        self.logger.info("Reddit OAuth token obtained (expires in %s s).", token_data.get("expires_in", 3600))
-        return {
-            "Authorization": f"bearer {self._access_token}",
-            "User-Agent": REDDIT_USER_AGENT,
-        }
+        root = ET.fromstring(response.content)
+        return root.findall(f"{{{ATOM_NS}}}entry")
 
     def scan_subreddits(
         self,
@@ -137,16 +170,15 @@ class RedditScraper:
         *,
         limit: int = DEFAULT_POSTS_PER_SUBREDDIT,
     ) -> list[RedditPost]:
-        url = f"{REDDIT_OAUTH_BASE_URL}/r/{subreddit}/new.json"
-        params = {
-            "limit": max(1, min(limit, 100)),
-        }
-        posts = self._fetch_posts(url, subreddit=subreddit, params=params)
-        self.logger.info(
-            "Fetched %s posts from r/%s.",
-            len(posts),
-            subreddit,
-        )
+        capped = max(1, min(limit, 100))
+        url = f"{REDDIT_BASE_URL}/r/{subreddit}/new/.rss?limit={capped}"
+        entries = self._fetch_rss(url)
+        posts = [
+            p
+            for entry in entries
+            if (p := _parse_atom_entry(entry, subreddit)) is not None
+        ]
+        self.logger.info("Fetched %s posts from r/%s.", len(posts), subreddit)
         return posts
 
     def search_keywords(
@@ -198,17 +230,17 @@ class RedditScraper:
         *,
         limit: int = DEFAULT_SEARCH_RESULTS_PER_KEYWORD,
     ) -> list[RedditPost]:
-        url = f"{REDDIT_OAUTH_BASE_URL}/r/{subreddit}/search.json"
-        if self.session is None:
-            raise RuntimeError("requests is required for Reddit scraping.")
-        params = {
-            "q": keyword,
-            "restrict_sr": "on",
-            "sort": "new",
-            "t": "week",
-            "limit": max(1, min(limit, 100)),
-        }
-        posts = self._fetch_posts(url, subreddit=subreddit, params=params)
+        capped = max(1, min(limit, 100))
+        url = (
+            f"{REDDIT_BASE_URL}/r/{subreddit}/search.rss"
+            f"?q={quote_plus(keyword)}&restrict_sr=on&sort=new&t=week&limit={capped}"
+        )
+        entries = self._fetch_rss(url)
+        posts = [
+            p
+            for entry in entries
+            if (p := _parse_atom_entry(entry, subreddit)) is not None
+        ]
         self.logger.info(
             "Keyword search fetched %s posts from r/%s for '%s'.",
             len(posts),
@@ -216,71 +248,3 @@ class RedditScraper:
             keyword,
         )
         return posts
-
-    def _fetch_posts(
-        self,
-        url: str,
-        *,
-        subreddit: str,
-        params: dict[str, Any],
-    ) -> list[RedditPost]:
-        if self.session is None:
-            raise RuntimeError("requests is required for Reddit scraping.")
-
-        headers = self._get_auth_headers()
-        response = self.session.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=self.settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        children = payload.get("data", {}).get("children", [])
-
-        posts: list[RedditPost] = []
-        for child in children:
-            item = child.get("data", {})
-            post = self._parse_post(subreddit, item)
-            if post is not None:
-                posts.append(post)
-        return posts
-
-    def _parse_post(self, subreddit: str, item: dict[str, Any]) -> RedditPost | None:
-        if item.get("stickied") or item.get("pinned"):
-            return None
-        if item.get("removed_by_category"):
-            return None
-
-        post_id = str(item.get("id") or "").strip()
-        title = str(item.get("title") or "").strip()
-        permalink = str(item.get("permalink") or "").strip()
-        if not post_id or not title or not permalink:
-            return None
-
-        created_utc = item.get("created_utc")
-        if created_utc is None:
-            return None
-
-        try:
-            created_at = datetime.fromtimestamp(float(created_utc), tz=timezone.utc)
-        except (TypeError, ValueError, OSError):
-            return None
-
-        body = str(item.get("selftext") or "").strip()
-        author = str(item.get("author") or "[deleted]").strip()
-        upvotes = int(item.get("ups") or 0)
-        comment_count = int(item.get("num_comments") or 0)
-        post_url = f"{REDDIT_BASE_URL}{permalink}"
-
-        return RedditPost(
-            post_id=post_id,
-            subreddit=subreddit,
-            title=title,
-            body=body,
-            author=author,
-            post_url=post_url,
-            created_at=created_at,
-            upvotes=upvotes,
-            comment_count=comment_count,
-        )
