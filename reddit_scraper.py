@@ -20,7 +20,7 @@ REDDIT_USER_AGENT = "script:ElvanRedditMonitor:1.0 (by /u/AmanKumar)"
 ATOM_NS = "http://www.w3.org/2005/Atom"
 DEFAULT_POSTS_PER_SUBREDDIT = 50
 DEFAULT_SEARCH_RESULTS_PER_KEYWORD = 10
-REQUEST_PAUSE_SECONDS = 0.25
+RATE_LIMIT_FALLBACK_SECONDS = 10  # wait time when no header is present
 
 
 @dataclass(slots=True)
@@ -110,22 +110,70 @@ class RedditScraper:
         self.settings = settings
         self.logger = logger
         self.session = requests.Session() if requests is not None else None
+        self._next_request_after: float = 0.0  # monotonic wall-clock time
 
     def _get_headers(self) -> dict[str, str]:
         return {"User-Agent": REDDIT_USER_AGENT}
 
+    def _wait_for_rate_limit(self) -> None:
+        """Block until Reddit's rate-limit window has elapsed."""
+        wait = self._next_request_after - time.time()
+        if wait > 0:
+            self.logger.info("Reddit rate limit: waiting %.1f s before next request.", wait)
+            time.sleep(wait)
+
+    def _update_rate_limit(self, response: Any) -> None:
+        """Read X-Ratelimit-Reset from a successful response and schedule the next slot."""
+        reset_raw = response.headers.get("x-ratelimit-reset")
+        try:
+            reset_seconds = int(reset_raw) if reset_raw is not None else 0
+        except (ValueError, TypeError):
+            reset_seconds = 0
+        remaining_raw = response.headers.get("x-ratelimit-remaining")
+        try:
+            remaining = float(remaining_raw) if remaining_raw is not None else 1.0
+        except (ValueError, TypeError):
+            remaining = 1.0
+        # If no budget left, schedule the next request after the reset window.
+        # Always enforce at least a 1-second gap as a safety floor.
+        if remaining <= 0 and reset_seconds > 0:
+            self._next_request_after = time.time() + reset_seconds + 1
+        else:
+            self._next_request_after = time.time() + 1
+
     def _fetch_rss(self, url: str) -> list[ET.Element]:
-        """Fetch a Reddit Atom feed URL and return all <entry> elements."""
+        """Fetch a Reddit Atom feed URL, honouring rate-limit headers."""
         if self.session is None:
             raise RuntimeError("requests is required for Reddit scraping.")
-        response = self.session.get(
-            url,
-            headers=self._get_headers(),
-            timeout=self.settings.request_timeout_seconds,
-        )
+
+        for attempt in range(2):
+            self._wait_for_rate_limit()
+            response = self.session.get(
+                url,
+                headers=self._get_headers(),
+                timeout=self.settings.request_timeout_seconds,
+            )
+
+            if response.status_code == 429:
+                reset_raw = response.headers.get("x-ratelimit-reset")
+                try:
+                    wait = int(reset_raw) + 1 if reset_raw is not None else RATE_LIMIT_FALLBACK_SECONDS
+                except (ValueError, TypeError):
+                    wait = RATE_LIMIT_FALLBACK_SECONDS
+                self.logger.warning(
+                    "Reddit 429 on attempt %d — waiting %d s then retrying.", attempt + 1, wait
+                )
+                time.sleep(wait)
+                continue
+
+            response.raise_for_status()
+            self._update_rate_limit(response)
+            root = ET.fromstring(response.content)
+            return root.findall(f"{{{ATOM_NS}}}entry")
+
+        # Both attempts exhausted — raise on the last response
         response.raise_for_status()
-        root = ET.fromstring(response.content)
-        return root.findall(f"{{{ATOM_NS}}}entry")
+        return []
 
     def scan_subreddits(
         self,
@@ -138,10 +186,7 @@ class RedditScraper:
         per_subreddit_counts: dict[str, int] = {}
         errors: list[str] = []
 
-        for index, subreddit in enumerate(subreddits):
-            if index > 0:
-                time.sleep(REQUEST_PAUSE_SECONDS)
-
+        for subreddit in subreddits:
             try:
                 subreddit_posts = self.fetch_subreddit_posts(
                     subreddit,
@@ -195,9 +240,6 @@ class RedditScraper:
 
         for subreddit in subreddits:
             for keyword in keywords:
-                if posts or errors:
-                    time.sleep(REQUEST_PAUSE_SECONDS)
-
                 try:
                     keyword_posts = self.search_subreddit_posts(
                         subreddit,
