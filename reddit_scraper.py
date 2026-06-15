@@ -12,6 +12,9 @@ except ImportError:  # pragma: no cover - dependency may be missing in tests
 
 
 REDDIT_BASE_URL = "https://www.reddit.com"
+REDDIT_OAUTH_BASE_URL = "https://oauth.reddit.com"
+REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+REDDIT_USER_AGENT = "script:ElvanRedditMonitor:1.0 (by /u/AmanKumar)"
 DEFAULT_POSTS_PER_SUBREDDIT = 50
 DEFAULT_SEARCH_RESULTS_PER_KEYWORD = 10
 REQUEST_PAUSE_SECONDS = 0.25
@@ -50,6 +53,46 @@ class RedditScraper:
         self.settings = settings
         self.logger = logger
         self.session = requests.Session() if requests is not None else None
+        self._access_token: str | None = None
+        self._token_expires_at: float = 0.0
+
+    def _get_auth_headers(self) -> dict[str, str]:
+        """Return request headers, fetching a fresh OAuth2 token when needed."""
+        client_id = getattr(self.settings, "reddit_client_id", None)
+        client_secret = getattr(self.settings, "reddit_client_secret", None)
+
+        if not client_id or not client_secret:
+            raise RuntimeError(
+                "Reddit OAuth credentials are required. "
+                "Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env. "
+                "Create a free 'script' app at https://www.reddit.com/prefs/apps/"
+            )
+
+        if self._access_token and time.time() < self._token_expires_at - 60:
+            return {
+                "Authorization": f"bearer {self._access_token}",
+                "User-Agent": REDDIT_USER_AGENT,
+            }
+
+        if self.session is None:
+            raise RuntimeError("requests is required for Reddit scraping.")
+
+        response = self.session.post(
+            REDDIT_TOKEN_URL,
+            auth=(client_id, client_secret),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": REDDIT_USER_AGENT},
+            timeout=self.settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        token_data = response.json()
+        self._access_token = token_data["access_token"]
+        self._token_expires_at = time.time() + token_data.get("expires_in", 3600)
+        self.logger.info("Reddit OAuth token obtained (expires in %s s).", token_data.get("expires_in", 3600))
+        return {
+            "Authorization": f"bearer {self._access_token}",
+            "User-Agent": REDDIT_USER_AGENT,
+        }
 
     def scan_subreddits(
         self,
@@ -94,7 +137,7 @@ class RedditScraper:
         *,
         limit: int = DEFAULT_POSTS_PER_SUBREDDIT,
     ) -> list[RedditPost]:
-        url = f"{REDDIT_BASE_URL}/r/{subreddit}/new.json"
+        url = f"{REDDIT_OAUTH_BASE_URL}/r/{subreddit}/new.json"
         params = {
             "limit": max(1, min(limit, 100)),
         }
@@ -155,7 +198,7 @@ class RedditScraper:
         *,
         limit: int = DEFAULT_SEARCH_RESULTS_PER_KEYWORD,
     ) -> list[RedditPost]:
-        url = f"{REDDIT_BASE_URL}/r/{subreddit}/search.json"
+        url = f"{REDDIT_OAUTH_BASE_URL}/r/{subreddit}/search.json"
         if self.session is None:
             raise RuntimeError("requests is required for Reddit scraping.")
         params = {
@@ -184,9 +227,7 @@ class RedditScraper:
         if self.session is None:
             raise RuntimeError("requests is required for Reddit scraping.")
 
-        headers = {
-            "User-Agent": "ElvanRedditMonitor/1.0 by AmanKumar",
-        }
+        headers = self._get_auth_headers()
         response = self.session.get(
             url,
             headers=headers,

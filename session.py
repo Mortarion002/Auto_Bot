@@ -10,7 +10,6 @@ from models import SessionHealth
 
 
 CHROME_EXECUTABLE_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-CHROMEDRIVER_PATH = r"C:\Users\resoa\AppData\Local\Temp\chromedriver\chromedriver-win64\chromedriver.exe"
 
 
 def _load_uc() -> Any:
@@ -261,7 +260,6 @@ class BrowserSession:
             self._driver = uc.Chrome(
                 options=options,
                 browser_executable_path=CHROME_EXECUTABLE_PATH,
-                driver_executable_path=CHROMEDRIVER_PATH,
                 headless=False,
                 use_subprocess=True,
             )

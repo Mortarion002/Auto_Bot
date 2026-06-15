@@ -46,7 +46,7 @@ Both bonuses stack.
 
 **Per-alert Telegram message** (sent before the digest):
 
-```
+```text
 🔥 HOT LEAD — r/{subreddit}
 
 👤 u/{author} · Score: {boosted_score}
@@ -129,6 +129,27 @@ Common values include:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TIMEZONE`
+- `REDDIT_CLIENT_ID`
+- `REDDIT_CLIENT_SECRET`
+
+### Reddit OAuth setup (required)
+
+Reddit requires OAuth2 for API access. The scraper uses an app-only client credentials grant (no user login needed — read-only access to public subreddits).
+
+1. Go to [https://www.reddit.com/prefs/apps/](https://www.reddit.com/prefs/apps/)
+2. Click **"create another app..."** at the bottom
+3. Fill in any name (e.g. `ElvanRedditMonitor`), select **script**, set redirect URI to `http://localhost` (any value works here)
+4. After creating the app, copy:
+   - The short string under the app name → `REDDIT_CLIENT_ID`
+   - The **secret** field → `REDDIT_CLIENT_SECRET`
+5. Add both to `.env`:
+
+```env
+REDDIT_CLIENT_ID=your_client_id_here
+REDDIT_CLIENT_SECRET=your_secret_here
+```
+
+The scraper fetches a bearer token automatically on first use and caches it for 1 hour.
 
 ## Data Files
 
@@ -166,7 +187,7 @@ If `NEON_DATABASE_URL` is set, the bot also writes parallel copies of surfaced f
 
 - Initials: Mortarion002
 - GitHub: Mortarion002
-- Email: resoamankumar@gmail.com
+- Email: [resoamankumar@gmail.com](mailto:resoamankumar@gmail.com)
 
 ## Built For
 

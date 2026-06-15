@@ -62,6 +62,8 @@ class Settings:
     neon_database_url: str | None = None
     account_handle: str = "@yourhandle"
     gemini_api_key: str | None = None
+    reddit_client_id: str | None = None
+    reddit_client_secret: str | None = None
     gemini_model: str = "gemini-2.5-flash"
     x_username: str | None = None
     x_password: str | None = None
@@ -106,6 +108,8 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         neon_database_url=os.getenv("NEON_DATABASE_URL"),
         account_handle=_env_str("ACCOUNT_HANDLE", "@yourhandle"),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
+        reddit_client_id=os.getenv("REDDIT_CLIENT_ID"),
+        reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
         gemini_model=_env_str("GEMINI_MODEL", "gemini-2.5-flash"),
         x_username=os.getenv("X_USERNAME"),
         x_password=os.getenv("X_PASSWORD"),
