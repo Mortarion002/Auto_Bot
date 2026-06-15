@@ -291,6 +291,16 @@ class NeonStore:
 
         return self.record_signal_rows(rows)
 
+    def get_existing_dedupe_keys(self, keys: list[str]) -> set[str]:
+        if not keys or not self.ensure_schema():
+            return set()
+        placeholders = ", ".join(["%s"] * len(keys))
+        sql = f"SELECT dedupe_key FROM signal_events WHERE dedupe_key IN ({placeholders})"
+        with psycopg.connect(self.database_url) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, keys)
+                return {row[0] for row in cursor.fetchall()}
+
     def record_signal_rows(self, rows: list[dict[str, Any]]) -> int:
         if not rows or not self.ensure_schema():
             return 0

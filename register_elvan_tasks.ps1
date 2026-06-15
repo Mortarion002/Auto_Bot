@@ -46,6 +46,19 @@ Register-ScheduledTask `
     -Settings $redditMonitorSettings `
     -Force
 
+$signalMonitorAction = New-ScheduledTaskAction `
+    -Execute $pythonPath `
+    -Argument "$workingDirectory\signal_monitor.py" `
+    -WorkingDirectory $workingDirectory
+$signalMonitorTrigger = New-ScheduledTaskTrigger -Daily -At "09:30"
+$signalMonitorSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+Register-ScheduledTask `
+    -TaskName "ElvanAgent_Signal_Monitor" `
+    -Action $signalMonitorAction `
+    -Trigger $signalMonitorTrigger `
+    -Settings $signalMonitorSettings `
+    -Force
+
 $statsReportAction = New-ScheduledTaskAction `
     -Execute $pythonPath `
     -Argument "$workingDirectory\orchestrator.py stats-report" `
