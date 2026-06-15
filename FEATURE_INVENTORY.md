@@ -7,6 +7,7 @@ This file classifies the current project by what is actively used in the researc
 ### X research digest
 
 Purpose:
+
 - open a logged-in X session
 - search configured keywords
 - filter and score candidate posts
@@ -14,6 +15,7 @@ Purpose:
 - send a digest to Telegram
 
 Primary files:
+
 - `orchestrator.py`
 - `queue_builder.py`
 - `searcher.py`
@@ -24,12 +26,20 @@ Primary files:
 ### Reddit monitoring
 
 Purpose:
-- scan target subreddits
+
+- scan target subreddits via Atom/RSS feed (no credentials required)
 - rank relevant posts
 - optionally send hot-lead alerts
 - send a Reddit digest to Telegram
 
+Notes:
+
+- `reddit_scraper.py` uses Reddit's public Atom/RSS feed (`/new/.rss`, `/search.rss`)
+- switched from the `.json` API in June 2026 after Reddit began returning 403 for all unauthenticated JSON requests
+- upvote and comment counts are not available in the RSS feed and default to 0; keyword/recency scoring is unaffected
+
 Primary files:
+
 - `reddit_monitor.py`
 - `reddit_scraper.py`
 - `reddit_scorer.py`
@@ -39,12 +49,14 @@ Primary files:
 ### Reporting and persistence
 
 Purpose:
+
 - log runs
 - track already-seen items
 - provide a daily stats summary
 - preserve failed Telegram deliveries
 
 Primary files:
+
 - `db.py`
 - `reddit_db.py`
 - `stats_reporter.py`
