@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import math
 import re
+
+# ---------------------------------------------------------------------------
+# Keyword lists used for the pass/fail filter
+# ---------------------------------------------------------------------------
 
 PRODUCT_TERMS = [
     "nps", "csat", "ces", "net promoter", "customer satisfaction",
@@ -25,28 +30,61 @@ PAIN_TERMS = [
     "monetize", "monetization",
 ]
 
-INTENT_BOOST_TERMS = [
-    "alternative", "replace", "replacement", "looking for",
-    "recommend", "switch", "switching", "what do you use",
-    "anyone using", "anyone tried", "moved away", "moved from",
-    "migrated", "shut down", "shutdown", "pricing", "expensive",
-    "cost-effective", "hard to justify", "room to build",
-]
-
-COMPETITOR_BOOST_TERMS = [
-    "delighted", "qualtrics", "survicate", "medallia", "uservoice",
-    "getsatisfaction", "hotjar", "intercom",
-]
-
-CATEGORY_BOOST_TERMS = [
-    "nps", "csat", "net promoter", "customer feedback", "feedback tool",
-    "customer feedback tool", "survey tool", "customer satisfaction",
-    "customer effort", "voice of customer", "in-app feedback",
-]
-
-# Acronyms that must be word-boundary matched to avoid false positives.
+# Acronyms that need word-boundary matching to avoid false positives.
 _ACRONYM_TERMS = frozenset({"nps", "csat", "ces", "voc"})
 
+# ---------------------------------------------------------------------------
+# Keyword groups used for scoring (ordered by intent strength)
+# ---------------------------------------------------------------------------
+
+_DIRECT_TERMS = frozenset({
+    "nps", "csat", "ces", "net promoter", "survey tool", "feedback tool",
+    "customer feedback tool", "in-app feedback", "user feedback tool",
+    "churn survey", "customer satisfaction", "customer effort",
+})
+
+_COMPETITOR_SCORE_TERMS = frozenset({
+    "qualtrics", "delighted", "survicate", "medallia", "uservoice",
+    "getsatisfaction", "hotjar", "intercom survey",
+})
+
+_PAIN_SCORE_TERMS = frozenset({
+    "voice of customer", "voc", "customer feedback", "user feedback",
+    "collect feedback", "gather feedback", "feedback from customers",
+    "feedback from users",
+})
+
+_BUYING_SIGNAL_TERMS = frozenset({
+    "alternative", "replace", "replacement", "looking for", "recommend",
+    "switch", "switching", "what do you use", "anyone using", "anyone tried",
+    "moved away", "migrated", "shut down", "shutdown", "pricing", "expensive",
+    "hard to justify",
+})
+
+_INTENT_BASE: dict[str, float] = {
+    "direct": 28.0,
+    "competitor": 26.0,
+    "pain": 16.0,
+    "discovery": 10.0,
+}
+
+_LOCATION_SCORE: dict[str, float] = {
+    "title": 24.0,
+    "body": 16.0,
+}
+
+_SOURCE_BONUS: dict[str, float] = {
+    "HackerNews": 5.0,
+    "ProductHunt": 3.0,
+}
+
+HOT_THRESHOLD = 70.0
+MEDIUM_THRESHOLD = 40.0
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _has_term(text: str, term: str) -> bool:
     if term in _ACRONYM_TERMS:
@@ -72,6 +110,26 @@ def _is_self_signal(title: str, url: str, body: str, source: str) -> bool:
     return False
 
 
+def _best_keyword_match(title: str, body: str) -> tuple[str, str]:
+    """Return (intent, location) for the highest-priority keyword found."""
+    for intent, terms in [
+        ("direct", _DIRECT_TERMS),
+        ("competitor", _COMPETITOR_SCORE_TERMS),
+        ("pain", _PAIN_SCORE_TERMS),
+    ]:
+        for term in terms:
+            if _has_term(title, term):
+                return intent, "title"
+        for term in terms:
+            if _has_term(body, term):
+                return intent, "body"
+    return "discovery", "body"
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def passes_keyword_filter(title: str, body: str, url: str, source: str) -> bool:
     if _is_self_signal(title, url, body, source):
         return False
@@ -89,16 +147,39 @@ def passes_keyword_filter(title: str, body: str, url: str, source: str) -> bool:
     return False
 
 
-def compute_boost(title: str, body: str, base_score: float) -> tuple[float, str]:
-    text = (title + " " + body).lower()
-    boost = 0.0
-    if any(_has_term(text, t) for t in INTENT_BOOST_TERMS):
-        boost += 2
-    if any(_has_term(text, t) for t in COMPETITOR_BOOST_TERMS):
-        boost += 2
-    if any(_has_term(text, t) for t in CATEGORY_BOOST_TERMS):
-        boost += 1
+def score_signal(
+    title: str,
+    body: str,
+    *,
+    upvotes: int,
+    comments_count: int,
+    source: str,
+) -> tuple[float, str]:
+    """Score a signal post and return (score, tier).
 
-    boosted = max(0.0, min(10.0, base_score + boost))
-    tier = "hot" if boosted >= 8 else "medium" if boosted >= 5 else "low"
-    return boosted, tier
+    Tier is 'hot', 'medium', or 'low' — same categories as the Reddit scorer.
+    No AI required; scoring is purely rule-based.
+    """
+    intent, location = _best_keyword_match(title, body)
+
+    score = _INTENT_BASE[intent] + _LOCATION_SCORE[location]
+
+    # Buying-signal bonus
+    full_text = (title + " " + body).lower()
+    buying_in_title = any(_has_term(title.lower(), t) for t in _BUYING_SIGNAL_TERMS)
+    buying_in_body = any(_has_term(full_text, t) for t in _BUYING_SIGNAL_TERMS)
+    if buying_in_title:
+        score += 8.0
+    elif buying_in_body:
+        score += 4.0
+
+    # Engagement (same formula as reddit_scorer)
+    score += min(8.0, math.log10(max(upvotes, 1)) * 4.0)
+    score += min(10.0, comments_count * 1.0)
+
+    # Source bonus
+    score += _SOURCE_BONUS.get(source, 0.0)
+
+    score = round(score, 2)
+    tier = "hot" if score >= HOT_THRESHOLD else "medium" if score >= MEDIUM_THRESHOLD else "low"
+    return score, tier
