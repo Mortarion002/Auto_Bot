@@ -48,13 +48,20 @@ _ANALYSIS_PROMPT = (
 
 
 def _safe_json_parse(raw: str) -> dict[str, Any] | None:
-    cleaned = re.sub(r"```json\s*|```\s*", "", raw, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw, flags=re.IGNORECASE).strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return None
+    candidate = cleaned[start : end + 1]
     try:
-        return json.loads(cleaned[start : end + 1])
+        return json.loads(candidate)
+    except (ValueError, TypeError):
+        pass
+    # Second attempt: fix unescaped control characters (newlines/tabs inside strings)
+    fixed = re.sub(r'(?<!\\)([\x00-\x1f])', lambda m: repr(m.group(0))[1:-1], candidate)
+    try:
+        return json.loads(fixed)
     except (ValueError, TypeError):
         return None
 
@@ -85,14 +92,36 @@ def _analyze_post(settings: Settings, logger: Any, title: str, body: str, source
             body=body[:600],
             source=source,
         )
-        response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=prompt,
-            config={"temperature": 0.4, "max_output_tokens": 350},
-        )
-        parsed = _safe_json_parse(response.text or "")
+
+        raw_text: str = ""
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=settings.gemini_model,
+                    contents=prompt,
+                    config={"temperature": 0.4, "max_output_tokens": 1024},
+                )
+                raw_text = response.text or ""
+                break
+            except Exception as exc:
+                if attempt == 0 and "503" in str(exc):
+                    import time as _time
+                    logger.warning("Gemini 503 for '%s' — retrying in 10 s.", title[:60])
+                    _time.sleep(10)
+                else:
+                    raise
+
+        if not raw_text:
+            logger.warning("Gemini returned empty response for '%s'.", title[:60])
+            return defaults
+
+        parsed = _safe_json_parse(raw_text)
         if not parsed:
-            logger.warning("AI analysis returned unparseable JSON for '%s'.", title[:60])
+            logger.warning(
+                "AI analysis returned unparseable JSON for '%s'. Raw: %s",
+                title[:60],
+                raw_text[:200],
+            )
             return defaults
 
         return {
