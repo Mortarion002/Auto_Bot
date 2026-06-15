@@ -28,12 +28,17 @@ Purpose:
 - generate optional AI response suggestions for X findings
 - rank and surface Reddit leads
 - optionally generate Reddit hot-lead comments
+- scan HackerNews and Product Hunt for NPS/feedback/competitor signals
 
 Primary files:
 - `ai.py`
 - `reddit_monitor.py`
 - `reddit_scorer.py`
 - `reddit_scraper.py`
+- `signal_monitor.py`
+- `hn_scraper.py`
+- `ph_scraper.py`
+- `signal_filter.py`
 
 Risk level:
 - medium
@@ -41,6 +46,7 @@ Risk level:
 Notes:
 - failures here should degrade gracefully
 - network or model outages should not erase already-collected research
+- HN/PH scoring is purely rule-based (no AI); Reddit hot-lead comment generation uses Gemini but is optional
 
 ## Stage 3: Delivery
 

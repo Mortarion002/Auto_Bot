@@ -37,6 +37,7 @@ Notes:
 - `reddit_scraper.py` uses Reddit's public Atom/RSS feed (`/new/.rss`, `/search.rss`)
 - switched from the `.json` API in June 2026 after Reddit began returning 403 for all unauthenticated JSON requests
 - upvote and comment counts are not available in the RSS feed and default to 0; keyword/recency scoring is unaffected
+- rate limiting handled dynamically via `X-Ratelimit-Reset` / `X-Ratelimit-Remaining` headers; Reddit enforces ~60 s per request for unauthenticated RSS
 
 Primary files:
 
@@ -44,6 +45,34 @@ Primary files:
 - `reddit_scraper.py`
 - `reddit_scorer.py`
 - `reddit_db.py`
+- `notifier.py`
+
+### HackerNews + Product Hunt signal monitoring
+
+Purpose:
+
+- scan HackerNews (Algolia API, no credentials) for NPS/feedback/competitor discussions
+- scan Product Hunt (GraphQL API, developer token) for relevant product launches
+- keyword-filter and score signals using the same rule-based approach as the Reddit scorer
+- dedup via Neon `signal_events` table to avoid re-processing seen posts
+- send a daily digest to Telegram
+- upsert all new signals to Neon for dashboard visibility
+
+Notes:
+
+- `hn_scraper.py` runs 8 keyword queries against the Algolia HN API with a 14-day lookback; no credentials required
+- `ph_scraper.py` runs 2 GraphQL queries (customer-success topic + newest posts); requires `PRODUCTHUNT_DEV_TOKEN`
+- `signal_filter.py` contains keyword lists (product terms, competitor terms, pain terms) and a `score_signal()` function; no AI used
+- scoring mirrors `reddit_scorer.py`: intent base + location bonus + buying-signal bonus + engagement + source bonus
+- tiers: hot ≥ 70, medium ≥ 40, low < 40
+
+Primary files:
+
+- `signal_monitor.py`
+- `hn_scraper.py`
+- `ph_scraper.py`
+- `signal_filter.py`
+- `neon_store.py`
 - `notifier.py`
 
 ### Reporting and persistence

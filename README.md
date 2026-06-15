@@ -2,17 +2,19 @@
 
 Analysis-first social research system for Elvan.
 
-This project scans X and Reddit, ranks relevant conversations, generates optional response suggestions, stores run history in SQLite, and sends research digests through Telegram.
-It can also mirror findings and run summaries into Neon Postgres as a parallel analytics channel without replacing SQLite.
+This project scans X, Reddit, HackerNews, and Product Hunt, ranks relevant conversations, generates optional response suggestions, stores run history in SQLite, and sends research digests through Telegram.
+It also mirrors findings and run summaries into Neon Postgres as a parallel analytics channel for dashboard visibility.
 
 ## What It Does
 
 - Finds relevant conversations on X
 - Surfaces notable Reddit leads
+- Monitors HackerNews and Product Hunt for NPS/feedback/competitor signals
 - Generates optional response suggestions for X findings
 - Sends research digests and stats reports through Telegram
 - Preserves failed Telegram deliveries in `delivery_failures/` for manual recovery
 - Tracks run history, seen items, and failures in SQLite
+- Writes all surfaced signals to Neon Postgres (`signal_events` table) for dashboard visibility
 - Runs on a schedule through Windows Task Scheduler
 
 ## Main Workflows
@@ -27,9 +29,13 @@ The X agent can:
 - send an X research digest to Telegram
 - send a daily research stats summary
 
+### HN + Product Hunt signal monitoring
+
+`signal_monitor.py` fetches posts from HackerNews (Algolia API, no auth) and Product Hunt (GraphQL API) daily, keyword-filters them for NPS/feedback/competitor relevance, scores them with the same rule-based approach used for Reddit, deduplicates via Neon, and sends a Telegram digest. New signals are upserted into the `signal_events` Neon table so they appear in the dashboard alongside Reddit and X findings.
+
 ### Reddit monitoring
 
-The Reddit monitor scans selected subreddits, ranks posts by relevance, deduplicates results, and sends a Telegram digest.
+The Reddit monitor scans selected subreddits via Atom/RSS (no credentials required), ranks posts by relevance, deduplicates results, and sends a Telegram digest. Rate limiting is handled dynamically using Reddit's own `X-Ratelimit-Reset` response headers.
 
 #### Hot Lead Alert System
 
@@ -73,6 +79,7 @@ If Gemini comment generation fails, the draft section shows `[Generation failed 
 
 - `orchestrator.py` for X research commands
 - `reddit_monitor.py` for the Reddit digest flow
+- `signal_monitor.py` for the HN + Product Hunt signal digest
 - `register_elvan_tasks.ps1` for Windows scheduled task setup
 
 ## Commands
@@ -101,6 +108,18 @@ Run the Reddit monitor:
 python reddit_monitor.py
 ```
 
+Run the HN + Product Hunt signal monitor:
+
+```powershell
+python signal_monitor.py
+```
+
+Dry run (no Telegram, no Neon writes):
+
+```powershell
+python signal_monitor.py --dry-run
+```
+
 ## Project Structure
 
 - `config.py` loads environment-based settings
@@ -110,6 +129,12 @@ python reddit_monitor.py
 - `neon_store.py` mirrors findings and workflow runs into Neon when configured
 - `searcher.py` discovers relevant X posts
 - `queue_builder.py` builds the X and Reddit Telegram digest
+- `reddit_scraper.py` fetches Reddit posts via Atom/RSS feed
+- `reddit_scorer.py` scores and ranks Reddit leads
+- `hn_scraper.py` fetches HackerNews posts via Algolia API
+- `ph_scraper.py` fetches Product Hunt posts via GraphQL API
+- `signal_filter.py` keyword-filters and scores HN/PH signals
+- `signal_monitor.py` orchestrates the HN + PH daily digest
 - `notifier.py` sends Telegram messages
 - `logger.py` configures logging
 
@@ -129,6 +154,7 @@ Common values include:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TIMEZONE`
+- `PRODUCTHUNT_DEV_TOKEN` — required for Product Hunt scraping (get from producthunt.com/v2/oauth/applications)
 
 ## Data Files
 
@@ -154,7 +180,20 @@ If `NEON_DATABASE_URL` is set, the bot also writes parallel copies of surfaced f
 
 ## Scheduled Tasks
 
-`register_elvan_tasks.ps1` registers the research digest and Reddit monitor scheduled tasks.
+`register_elvan_tasks.ps1` registers all scheduled tasks:
+
+| Task name | Script | Default time |
+| --- | --- | --- |
+| `ElvanAgent_BuildQueue` | `orchestrator.py build-queue` | 09:50 daily |
+| `ElvanAgent_Reddit_Monitor` | `reddit_monitor.py` | 09:40 daily |
+| `ElvanAgent_Signal_Monitor` | `signal_monitor.py` | 09:30 daily |
+| `ElvanAgent_StatsReport` | `orchestrator.py stats-report` | 22:05 daily |
+
+Run the script as Administrator to register or update all tasks:
+
+```powershell
+.\register_elvan_tasks.ps1
+```
 
 ## Development Notes
 
