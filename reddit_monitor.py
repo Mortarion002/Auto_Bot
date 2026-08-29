@@ -24,7 +24,11 @@ except ImportError:  # pragma: no cover - dependency may be missing in tests
 REDDIT_DB_FILENAME = "reddit_monitor.db"
 MAX_HIGH_PRIORITY_ITEMS = 5
 MAX_WORTH_READING_ITEMS = 5
-HOT_LEAD_THRESHOLD = 8.0
+# Boosted-score bar for firing an urgent per-post alert. The base scores from
+# reddit_scorer run on a ~18-120 scale (high priority == 75), so this sits just
+# above the high-priority line: a genuinely high-priority post *plus* a
+# conversion-intent or "Delighted" boost.
+HOT_LEAD_THRESHOLD = 85.0
 
 CONVERSION_PHRASES = (
     "alternative",
@@ -107,7 +111,7 @@ def _generate_hot_lead_comment(settings: Settings, logger: Any, lead: RedditLead
     response = client.models.generate_content(
         model=settings.gemini_model,
         contents=prompt,
-        config={"temperature": 0.6, "max_output_tokens": 220},
+        config={"temperature": 0.6, "max_output_tokens": 800},
     )
     return response.text.strip()
 
@@ -158,7 +162,10 @@ def build_digest_message(
 
     zone = settings.zoneinfo()
     now = datetime.now(zone)
-    next_digest_time = datetime.strptime(settings.daily_report_time, "%H:%M").time()
+    try:
+        next_digest_time = datetime.strptime(settings.reddit_digest_time, "%H:%M").time()
+    except ValueError:
+        next_digest_time = datetime.strptime("07:50", "%H:%M").time()
     next_digest = datetime.combine(
         now.date() + timedelta(days=1),
         next_digest_time,

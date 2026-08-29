@@ -162,38 +162,6 @@ class XSearcher:
         self.db = db
         self.logger = logger
 
-    def discover_posts(
-        self,
-        page: Any,
-        keywords: list[str],
-        *,
-        record_seen: bool = True,
-    ) -> tuple[list[DiscoveredPost], int]:
-        candidates: dict[str, DiscoveredPost] = {}
-
-        for keyword in keywords:
-            live_posts = self._filter_and_score_posts(
-                self._search_keyword(page, keyword, "live"),
-                record_seen=record_seen,
-            )
-            merged = {post.post_id: post for post in live_posts}
-
-            if len(live_posts) < self.settings.min_valid_posts_before_top_fallback:
-                top_posts = self._filter_and_score_posts(
-                    self._search_keyword(page, keyword, "top"),
-                    record_seen=record_seen,
-                )
-                for post in top_posts:
-                    merged.setdefault(post.post_id, post)
-
-            for post in merged.values():
-                existing = candidates.get(post.post_id)
-                if existing is None or post.score > existing.score:
-                    candidates[post.post_id] = post
-
-        ranked = sorted(candidates.values(), key=lambda item: item.score, reverse=True)
-        return ranked[: self.settings.top_posts_to_comment], len(keywords)
-
     def search_keyword_with_stats(
         self,
         page: Any,
@@ -220,10 +188,6 @@ class XSearcher:
             "raw_articles": article_count,
             "scraped_posts": len(posts),
         }
-
-    def _search_keyword(self, page: Any, keyword: str, mode: str) -> list[DiscoveredPost]:
-        posts, _ = self.search_keyword_with_stats(page, keyword, mode)
-        return posts
 
     def _build_search_url(self, keyword: str, mode: str) -> str:
         return (

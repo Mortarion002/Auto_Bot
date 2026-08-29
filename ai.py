@@ -227,7 +227,7 @@ class GeminiContentGenerator:
                 contents=prompt,
                 config={
                     "temperature": 0.6,
-                    "max_output_tokens": 220,
+                    "max_output_tokens": 800,
                 },
             )
             return response.text.strip()

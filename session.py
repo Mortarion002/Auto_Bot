@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,24 @@ from config import Settings
 from models import SessionHealth
 
 
-CHROME_EXECUTABLE_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+# Candidate Chrome install locations, checked in order. An explicit
+# CHROME_EXECUTABLE_PATH env var always wins; if nothing is found we fall back to
+# letting undetected-chromedriver auto-detect (browser_executable_path=None).
+_CHROME_PATH_CANDIDATES = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+)
+
+
+def _resolve_chrome_path() -> str | None:
+    override = os.getenv("CHROME_EXECUTABLE_PATH", "").strip()
+    if override:
+        return override
+    for candidate in _CHROME_PATH_CANDIDATES:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
 
 
 def _load_uc() -> Any:
@@ -257,9 +275,17 @@ class BrowserSession:
             options.add_argument("--disable-notifications")
             options.add_argument("--start-maximized")
 
+            chrome_path = _resolve_chrome_path()
+            if chrome_path:
+                self.logger.info("Using Chrome binary at %s.", chrome_path)
+            else:
+                self.logger.info(
+                    "No known Chrome binary path found; letting undetected-chromedriver auto-detect."
+                )
+
             self._driver = uc.Chrome(
                 options=options,
-                browser_executable_path=CHROME_EXECUTABLE_PATH,
+                browser_executable_path=chrome_path,
                 headless=False,
                 use_subprocess=True,
             )
