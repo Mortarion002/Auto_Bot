@@ -81,7 +81,15 @@ def _parse_atom_entry(entry: ET.Element, subreddit: str) -> RedditPost | None:
 
     author_el = entry.find(f"{{{ATOM_NS}}}author/{{{ATOM_NS}}}name")
     raw_author = (author_el.text or "").strip() if author_el is not None else ""
-    author = raw_author.lstrip("/u").lstrip("/").strip() or "[deleted]"
+    # Reddit's Atom feed reports authors as "/u/username" (older feeds: "/user/username").
+    # Strip only the exact prefix — never a character set, which would eat leading
+    # letters of names like "underscore" or "usama".
+    author = raw_author
+    for prefix in ("/u/", "/user/", "u/", "user/"):
+        if author.startswith(prefix):
+            author = author[len(prefix):]
+            break
+    author = author.strip() or "[deleted]"
 
     published_text = (entry.findtext(f"{{{ATOM_NS}}}published") or "").strip()
     try:

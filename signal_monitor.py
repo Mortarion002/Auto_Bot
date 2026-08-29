@@ -89,7 +89,10 @@ def _to_neon_row(signal: dict[str, Any]) -> dict[str, Any]:
         "reposts": None,
         "comments_count": signal.get("comments_count"),
         "upvotes": signal.get("upvotes"),
-        "alerted": signal["tier"] == "hot",
+        # HN/PH signals are only ever surfaced inside the daily digest — there is
+        # no per-signal urgent alert like the Reddit hot-lead path — so `alerted`
+        # is always False here.
+        "alerted": False,
         "hot_lead": signal["tier"] == "hot",
         "occurred_at": signal.get("occurred_at"),
         "metadata": {"kind": "signal_hn_ph", "source_detail": signal["source"]},
@@ -113,7 +116,7 @@ def _build_digest(
     lines = [
         f"Elvan Signal Monitor — HN + Product Hunt — {now.strftime('%B %d, %Y')}",
         "",
-        f"Hot Leads ({len(hot)} posts)",
+        f"Hot Leads ({_count_label(len(hot), MAX_HOT_IN_DIGEST)})",
     ]
 
     if hot:
@@ -122,7 +125,7 @@ def _build_digest(
     else:
         lines.append("  No hot leads today.")
 
-    lines.extend(["", f"Worth Reading ({len(medium)} posts)"])
+    lines.extend(["", f"Worth Reading ({_count_label(len(medium), MAX_MEDIUM_IN_DIGEST)})"])
 
     if medium:
         for item in medium[:MAX_MEDIUM_IN_DIGEST]:
@@ -137,6 +140,12 @@ def _build_digest(
     ])
 
     return "\n".join(lines)
+
+
+def _count_label(total: int, shown_cap: int) -> str:
+    if total > shown_cap:
+        return f"{shown_cap} shown of {total}"
+    return f"{total} posts"
 
 
 def _format_signal(item: dict[str, Any]) -> list[str]:

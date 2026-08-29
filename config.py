@@ -44,9 +44,12 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
-    if raw is None:
+    if raw is None or not raw.strip():
         return default
-    return int(raw)
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
 
 
 def _env_str(name: str, default: str) -> str:
@@ -72,6 +75,7 @@ class Settings:
     dry_run: bool = False
     daily_report_time: str = "22:00"
     queue_run_time: str = "08:00"
+    reddit_digest_time: str = "07:50"
     queue_max_reply_drafts: int = 25
     max_searches_per_day: int = 40
     posts_per_keyword_per_run: int = 20
@@ -117,6 +121,7 @@ def load_settings(base_dir: Path | None = None) -> Settings:
         dry_run=_env_bool("DRY_RUN", False),
         daily_report_time=_env_str("DAILY_REPORT_TIME", "22:00"),
         queue_run_time=_env_str("QUEUE_RUN_TIME", "08:00"),
+        reddit_digest_time=_env_str("REDDIT_DIGEST_TIME", "07:50"),
         queue_max_reply_drafts=_env_int("QUEUE_MAX_REPLY_DRAFTS", 25),
         max_searches_per_day=_env_int("MAX_SEARCHES_PER_DAY", 40),
         posts_per_keyword_per_run=_env_int("POSTS_PER_KEYWORD_PER_RUN", 20),

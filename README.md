@@ -154,6 +154,8 @@ Common values include:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TIMEZONE`
+- `REDDIT_DIGEST_TIME` — clock time (HH:MM) shown as the "next digest" hint in the Reddit digest; defaults to `07:50`
+- `CHROME_EXECUTABLE_PATH` — optional absolute path to the Chrome binary; blank means auto-detect
 - `PRODUCTHUNT_DEV_TOKEN` — required for Product Hunt scraping (get from producthunt.com/v2/oauth/applications)
 
 ## Data Files
@@ -184,8 +186,8 @@ If `NEON_DATABASE_URL` is set, the bot also writes parallel copies of surfaced f
 
 | Task name | Script | Default time |
 | --- | --- | --- |
-| `ElvanAgent_BuildQueue` | `orchestrator.py build-queue` | 09:50 daily |
-| `ElvanAgent_Reddit_Monitor` | `reddit_monitor.py` | 09:40 daily |
+| `ElvanAgent_BuildQueue` | `orchestrator.py build-queue` | 08:00 daily |
+| `ElvanAgent_Reddit_Monitor` | `reddit_monitor.py` | 07:50 daily |
 | `ElvanAgent_Signal_Monitor` | `signal_monitor.py` | 09:30 daily |
 | `ElvanAgent_StatsReport` | `orchestrator.py stats-report` | 22:05 daily |
 
