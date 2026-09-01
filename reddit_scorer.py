@@ -29,6 +29,12 @@ DIRECT_KEYWORDS = [
     "survey tool",
     "SurveyMonkey alternative",
     "Typeform alternative",
+    "customer experience platform",
+    "employee feedback",
+    "employee survey tool",
+    "eNPS",
+    "PMF survey",
+    "product market fit survey",
 ]
 
 PAIN_POINT_KEYWORDS = [
@@ -40,18 +46,36 @@ PAIN_POINT_KEYWORDS = [
     "voice of customer",
     "customer satisfaction",
     "customer health score",
+    "customer experience",
+    "employee experience",
+    "onboarding feedback",
+    "feedback collection",
+    "feedback survey",
+    "customer survey",
+    "employee engagement",
+    "low survey response",
+    "survey responses",
+    "customer complaints",
+    "detractors",
+    "passives",
+    "promoters",
 ]
 
 DISCOVERY_KEYWORDS = [
     "NPS",
     "customer feedback",
     "product feedback",
+    "customer experience",
+    "employee experience",
+    "onboarding",
+    "feedback",
+    "survey",
 ]
 
 ALL_KEYWORDS = DIRECT_KEYWORDS + PAIN_POINT_KEYWORDS + DISCOVERY_KEYWORDS
-RECENCY_WINDOW_HOURS = 72
-HIGH_PRIORITY_THRESHOLD = 75.0
-WORTH_READING_THRESHOLD = 45.0
+RECENCY_WINDOW_HOURS = 96
+HIGH_PRIORITY_THRESHOLD = 70.0
+WORTH_READING_THRESHOLD = 38.0
 
 SUBREDDIT_BONUS = {
     "saas": 8.0,
@@ -160,11 +184,6 @@ def score_post(
     primary = max(title_matches or matches, key=_keyword_sort_key)
     matched_keywords = tuple(sorted({match.keyword for match in matches}, key=str.lower))
     buying_signal_score = _buying_signal_score(post)
-
-    if primary.intent in {"pain", "discovery"} and primary.location != "title":
-        return None
-    if primary.intent != "direct" and primary.location != "title" and buying_signal_score <= 0:
-        return None
 
     score = 0.0
     score += INTENT_BASE_SCORE[primary.intent]

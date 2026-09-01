@@ -22,13 +22,22 @@ except ImportError:  # pragma: no cover - dependency may be missing in tests
 
 
 REDDIT_DB_FILENAME = "reddit_monitor.db"
-MAX_HIGH_PRIORITY_ITEMS = 5
-MAX_WORTH_READING_ITEMS = 5
+MAX_HIGH_PRIORITY_ITEMS = 8
+MAX_WORTH_READING_ITEMS = 8
 # Boosted-score bar for firing an urgent per-post alert. The base scores from
 # reddit_scorer run on a ~18-120 scale (high priority == 75), so this sits just
 # above the high-priority line: a genuinely high-priority post *plus* a
 # conversion-intent or "Delighted" boost.
-HOT_LEAD_THRESHOLD = 85.0
+HOT_LEAD_THRESHOLD = 78.0
+
+# RSS requests from this environment are currently being limited to roughly
+# one request per minute. Keep recovery search useful but strictly bounded.
+FALLBACK_SEARCHES = (
+    ("SaaS", "Delighted alternative"),
+    ("CustomerSuccess", "customer feedback tool"),
+    ("startups", "NPS tool"),
+    ("SaaS", "Delighted shutdown"),
+)
 
 CONVERSION_PHRASES = (
     "alternative",
@@ -85,6 +94,8 @@ def _apply_conversion_intent_boost(lead: RedditLead) -> float:
     has_conversion = any(phrase in lowered for phrase in CONVERSION_PHRASES)
     if has_question and has_conversion:
         bonus += 25.0
+    elif has_conversion:
+        bonus += 10.0
 
     if "delighted" in lowered:
         bonus += 10.0
@@ -326,8 +337,9 @@ def run_monitor(
                 "No leads found in subreddit-new scan; running direct keyword search fallback."
             )
             keyword_result = scraper.search_keywords(
-                TARGET_SUBREDDITS,
-                DIRECT_KEYWORDS,
+                [subreddit for subreddit, _ in FALLBACK_SEARCHES],
+                [keyword for _, keyword in FALLBACK_SEARCHES],
+                max_requests=len(FALLBACK_SEARCHES),
             )
             errors.extend(keyword_result.errors)
             all_posts = _dedupe_posts(all_posts + keyword_result.posts)

@@ -23,6 +23,10 @@ DEFAULT_SEARCH_RESULTS_PER_KEYWORD = 10
 RATE_LIMIT_FALLBACK_SECONDS = 10  # wait time when no header is present
 
 
+class RedditRateLimitError(RuntimeError):
+    """Raised when Reddit asks the client to stop making requests."""
+
+
 @dataclass(slots=True)
 class RedditPost:
     post_id: str
@@ -154,34 +158,30 @@ class RedditScraper:
         if self.session is None:
             raise RuntimeError("requests is required for Reddit scraping.")
 
-        for attempt in range(2):
-            self._wait_for_rate_limit()
-            response = self.session.get(
-                url,
-                headers=self._get_headers(),
-                timeout=self.settings.request_timeout_seconds,
+        self._wait_for_rate_limit()
+        response = self.session.get(
+            url,
+            headers=self._get_headers(),
+            timeout=self.settings.request_timeout_seconds,
+        )
+
+        if response.status_code == 429:
+            reset_raw = response.headers.get("x-ratelimit-reset")
+            try:
+                reset_seconds = int(reset_raw) if reset_raw is not None else RATE_LIMIT_FALLBACK_SECONDS
+            except (ValueError, TypeError):
+                reset_seconds = RATE_LIMIT_FALLBACK_SECONDS
+            self._next_request_after = time.time() + reset_seconds + 1
+            self.logger.warning(
+                "Reddit returned 429; stopping requests for this run (reset=%s).",
+                reset_raw or "unknown",
             )
+            raise RedditRateLimitError("Reddit rate limit reached (HTTP 429); run stopped safely.")
 
-            if response.status_code == 429:
-                reset_raw = response.headers.get("x-ratelimit-reset")
-                try:
-                    wait = int(reset_raw) + 1 if reset_raw is not None else RATE_LIMIT_FALLBACK_SECONDS
-                except (ValueError, TypeError):
-                    wait = RATE_LIMIT_FALLBACK_SECONDS
-                self.logger.warning(
-                    "Reddit 429 on attempt %d — waiting %d s then retrying.", attempt + 1, wait
-                )
-                time.sleep(wait)
-                continue
-
-            response.raise_for_status()
-            self._update_rate_limit(response)
-            root = ET.fromstring(response.content)
-            return root.findall(f"{{{ATOM_NS}}}entry")
-
-        # Both attempts exhausted — raise on the last response
         response.raise_for_status()
-        return []
+        self._update_rate_limit(response)
+        root = ET.fromstring(response.content)
+        return root.findall(f"{{{ATOM_NS}}}entry")
 
     def scan_subreddits(
         self,
@@ -204,6 +204,8 @@ class RedditScraper:
                 message = f"r/{subreddit}: {exc}"
                 self.logger.warning("Reddit fetch failed for %s", message)
                 errors.append(message)
+                if isinstance(exc, RedditRateLimitError):
+                    break
                 continue
 
             posts.extend(subreddit_posts)
@@ -240,14 +242,18 @@ class RedditScraper:
         keywords: list[str],
         *,
         results_per_keyword: int = DEFAULT_SEARCH_RESULTS_PER_KEYWORD,
+        max_requests: int | None = None,
     ) -> RedditScanResult:
         posts: list[RedditPost] = []
         scanned_count = 0
         per_subreddit_counts: dict[str, int] = {}
         errors: list[str] = []
 
+        request_count = 0
         for subreddit in subreddits:
             for keyword in keywords:
+                if max_requests is not None and request_count >= max_requests:
+                    return RedditScanResult(posts, scanned_count, per_subreddit_counts, errors)
                 try:
                     keyword_posts = self.search_subreddit_posts(
                         subreddit,
@@ -258,6 +264,9 @@ class RedditScraper:
                     message = f"r/{subreddit} [{keyword}]: {exc}"
                     self.logger.warning("Reddit keyword search failed for %s", message)
                     errors.append(message)
+                    request_count += 1
+                    if isinstance(exc, RedditRateLimitError):
+                        return RedditScanResult(posts, scanned_count, per_subreddit_counts, errors)
                     continue
 
                 posts.extend(keyword_posts)
@@ -265,6 +274,7 @@ class RedditScraper:
                 per_subreddit_counts[subreddit] = (
                     per_subreddit_counts.get(subreddit, 0) + len(keyword_posts)
                 )
+                request_count += 1
 
         return RedditScanResult(
             posts=posts,

@@ -39,7 +39,7 @@ class RedditScorerTests(unittest.TestCase):
             body="Looking for a better feedback loop before churn gets worse.",
             author="founder_2",
             post_url="https://www.reddit.com/r/startups/comments/post-2/example/",
-            created_at=now - timedelta(hours=90),
+            created_at=now - timedelta(hours=100),
             upvotes=20,
             comment_count=4,
         )
@@ -90,6 +90,42 @@ class RedditScorerTests(unittest.TestCase):
         )
 
         self.assertIsNone(score_post(post, now=now))
+
+    def test_body_pain_signal_is_now_a_medium_lead(self) -> None:
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        post = RedditPost(
+            post_id="post-body-pain",
+            subreddit="CustomerSuccess",
+            title="Our customer operations need work",
+            body="The feedback loop is breaking down.",
+            author="cs_operator",
+            post_url="https://www.reddit.com/r/CustomerSuccess/comments/post-body-pain/example/",
+            created_at=now - timedelta(hours=80),
+            upvotes=1,
+            comment_count=0,
+        )
+
+        lead = score_post(post, now=now)
+
+        self.assertIsNotNone(lead)
+        assert lead is not None
+        self.assertEqual(lead.priority, "medium")
+
+    def test_employee_feedback_signal_is_eligible(self) -> None:
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        post = RedditPost(
+            post_id="post-enps",
+            subreddit="startups",
+            title="How are small teams collecting employee feedback?",
+            body="We want a lightweight eNPS process without an enterprise platform.",
+            author="founder_3",
+            post_url="https://www.reddit.com/r/startups/comments/post-enps/example/",
+            created_at=now - timedelta(hours=10),
+            upvotes=2,
+            comment_count=0,
+        )
+
+        self.assertIsNotNone(score_post(post, now=now))
 
 
 if __name__ == "__main__":
