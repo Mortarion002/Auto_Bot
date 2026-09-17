@@ -127,6 +127,36 @@ class RedditScorerTests(unittest.TestCase):
 
         self.assertIsNotNone(score_post(post, now=now))
 
+    def test_generic_feedback_mention_is_rejected(self) -> None:
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        post = RedditPost(
+            post_id="generic-feedback",
+            subreddit="startups",
+            title="How do I get better feedback on my idea?",
+            body="Just looking for opinions from other founders.",
+            author="founder_4",
+            post_url="https://www.reddit.com/r/startups/comments/generic-feedback/example/",
+            created_at=now - timedelta(hours=4),
+            upvotes=10,
+            comment_count=2,
+        )
+        self.assertIsNone(score_post(post, now=now))
+
+    def test_survey_tool_request_remains_eligible(self) -> None:
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        post = RedditPost(
+            post_id="survey-tool-request",
+            subreddit="SaaS",
+            title="What survey tool do you use for customer feedback?",
+            body="We need a lightweight option for our SaaS customers.",
+            author="founder_5",
+            post_url="https://www.reddit.com/r/SaaS/comments/survey-tool-request/example/",
+            created_at=now - timedelta(hours=4),
+            upvotes=3,
+            comment_count=1,
+        )
+        self.assertIsNotNone(score_post(post, now=now))
+
 
 if __name__ == "__main__":
     unittest.main()

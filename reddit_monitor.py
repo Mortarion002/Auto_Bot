@@ -336,10 +336,22 @@ def run_monitor(
             logger.info(
                 "No leads found in subreddit-new scan; running direct keyword search fallback."
             )
-            keyword_result = scraper.search_keywords(
-                [subreddit for subreddit, _ in FALLBACK_SEARCHES],
-                [keyword for _, keyword in FALLBACK_SEARCHES],
-                max_requests=len(FALLBACK_SEARCHES),
+            fallback_posts: list[RedditPost] = []
+            fallback_errors: list[str] = []
+            for subreddit, keyword in FALLBACK_SEARCHES:
+                try:
+                    fallback_posts.extend(
+                        scraper.search_subreddit_posts(subreddit, keyword)
+                    )
+                except Exception as exc:
+                    fallback_errors.append(f"r/{subreddit} [{keyword}]: {exc}")
+                    if "rate limit" in str(exc).lower():
+                        break
+            keyword_result = type(scrape_result)(
+                posts=fallback_posts,
+                scanned_count=len(fallback_posts),
+                per_subreddit_counts={},
+                errors=fallback_errors,
             )
             errors.extend(keyword_result.errors)
             all_posts = _dedupe_posts(all_posts + keyword_result.posts)

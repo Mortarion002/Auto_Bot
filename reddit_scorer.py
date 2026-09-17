@@ -10,12 +10,9 @@ from reddit_scraper import RedditPost
 
 TARGET_SUBREDDITS = [
     "SaaS",
+    "ecommerce",
     "startups",
-    "Entrepreneur",
     "CustomerSuccess",
-    "ProductManagement",
-    "indiehackers",
-    "SideProject",
 ]
 
 DIRECT_KEYWORDS = [
@@ -125,6 +122,27 @@ BUYING_SIGNAL_PATTERNS = [
     "help",
 ]
 
+# These words are useful discovery hints, but are too common to qualify a
+# Reddit post on their own. They need a concrete feedback-tool context or an
+# explicit request/problem signal.
+GENERIC_MATCHES = {
+    "feedback",
+    "survey",
+    "onboarding",
+    "churn",
+    "customer retention",
+}
+
+CONTEXT_PATTERNS = (
+    "nps", "csat", "ces", "enps", "pmf", "net promoter",
+    "customer feedback", "employee feedback", "feedback loop",
+    "feedback survey", "customer survey", "survey tool", "survey software",
+    "feedback tool", "feedback collection", "voice of customer",
+    "customer satisfaction", "customer experience", "employee experience",
+    "delighted", "qualtrics", "surveymonkey", "survicate", "zendesk",
+    "shopify", "klaviyo",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class KeywordMatch:
@@ -178,6 +196,8 @@ def score_post(
 
     matches = _find_keyword_matches(post)
     if not matches:
+        return None
+    if not _is_qualified_match(post, matches):
         return None
 
     title_matches = [match for match in matches if match.location == "title"]
@@ -243,6 +263,22 @@ def _find_keyword_matches(post: RedditPost) -> list[KeywordMatch]:
         )
 
     return matches
+
+
+def _is_qualified_match(post: RedditPost, matches: list[KeywordMatch]) -> bool:
+    """Reject generic topical mentions that are not actionable Elvan leads."""
+    if any(match.intent == "direct" for match in matches):
+        return True
+
+    text = _normalize_text(post.text)
+    has_context = any(_contains_keyword(text, _normalize_text(pattern)) for pattern in CONTEXT_PATTERNS)
+    has_buying_signal = _buying_signal_score(post) > 0
+    non_generic = any(match.keyword.lower() not in GENERIC_MATCHES for match in matches)
+
+    # Concrete pain phrases (for example "feedback loop" or "response rate")
+    # qualify when they appear in a relevant operational context. A lone
+    # "feedback", "survey", "onboarding", or "churn" mention does not.
+    return non_generic and (has_context or has_buying_signal)
 
 
 def _keyword_intent(keyword: str) -> str:
